@@ -16,7 +16,7 @@ HEAT_SOURCE = {
 }
 
 INITIAL_CONDITION = {
-    "mode": "line",       # options : point, cloud, square, line
+    "mode": "line",       # options: point, cloud, square, line
     "temperature": 100.0,  # température maximale visée
     "background": 0.0,     # température du milieu
     "center": None,        # None => centre du domaine

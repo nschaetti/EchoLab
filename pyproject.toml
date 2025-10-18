@@ -1,0 +1,20 @@
+[project]
+name = "echolab"
+version = "0.0.1"
+description = "CLI tools and simulators for 2D acoustic wave experiments."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "matplotlib",
+    "pyyaml",
+    "click",
+    "rich",
+]
+
+[project.scripts]
+echolab = "echolab.cli:main"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
