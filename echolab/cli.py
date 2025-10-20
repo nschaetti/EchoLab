@@ -15,6 +15,7 @@ from echolab.simulators.openanfwi.wave import (
     run_simulation,
 )
 from echolab.simulators.openfwi.simulate_model import (
+    animate_openfwi_wavefields,
     plot_openfwi_results,
     run_openfwi_simulation,
 )
@@ -127,6 +128,11 @@ def openfwi(
         output_dir=output_dir,
         show=not no_visualization,
     )
+    animation_paths = animate_openfwi_wavefields(
+        results,
+        output_dir=output_dir,
+        show=not no_visualization,
+    )
 
     info_table = Table(title="OpenFWI Simulation Summary")
     info_table.add_column("Setting", style="cyan", no_wrap=True)
@@ -135,6 +141,11 @@ def openfwi(
     info_table.add_row("Model index", str(model_index))
     info_table.add_row("Configuration", str(config_path))
     info_table.add_row("Figure path", str(figure_path))
+    if animation_paths:
+        info_table.add_row(
+            "Animations",
+            "\n".join(str(path) for path in animation_paths),
+        )
     console.print(info_table)
 
 

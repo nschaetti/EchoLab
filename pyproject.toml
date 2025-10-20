@@ -10,6 +10,7 @@ dependencies = [
     "pyyaml",
     "click",
     "rich",
+    "pillow",
 ]
 
 [project.scripts]

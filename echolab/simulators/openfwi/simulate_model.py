@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Callable, Dict, List, Optional
 
+from matplotlib import animation
 import matplotlib.pyplot as plt
 import numpy as np
 import yaml
 from rich.console import Console
+from matplotlib.colors import Normalize
 
 from .a2d_mod_abc28 import simulate_acoustic_wavefield
 from .ricker import ricker
@@ -85,7 +87,10 @@ def run_openfwi_simulation(
     model_index:
         Index of the velocity model to simulate.
     config_path:
-        Path to the YAML configuration describing acquisition geometry.
+        Path to the YAML configuration describing acquisition geometry. The
+        configuration may optionally define ``snapshot_stride`` (int) to control
+        how frequently wavefield frames are stored and ``capture_wavefield``
+        (bool) to turn animation outputs on or off.
 
     Returns
     -------
@@ -155,6 +160,35 @@ def run_openfwi_simulation(
         f"[cyan]gx, gz[/cyan] {receiver_x_positions}, {receiver_z_positions}"
     )
 
+    snapshot_stride = max(1, int(config.get("snapshot_stride", 5)))
+    capture_wavefield = bool(config.get("capture_wavefield", True))
+
+    wavefield_snapshots_shot1: List[np.ndarray] = []
+    wavefield_snapshots_shot2: List[np.ndarray] = []
+
+    def make_wavefield_callback(
+        store: List[np.ndarray],
+    ) -> Optional[Callable[[np.ndarray, int, float, int], None]]:
+        if not capture_wavefield:
+            return None
+
+        def _callback(
+            pressure_field: np.ndarray,
+            time_step_index: int,
+            _time_step: float,
+            boundary_cell_count: int,
+        ) -> None:
+            if time_step_index % snapshot_stride != 0:
+                return
+
+            store.append(
+                _strip_absorbing_boundary(
+                    pressure_field, boundary_cell_count
+                )
+            )
+
+        return _callback
+
     receiver_traces_shot1 = simulate_acoustic_wavefield(
         velocity_model,
         nbc,
@@ -167,6 +201,7 @@ def run_openfwi_simulation(
         receiver_x_positions,
         receiver_z_positions,
         apply_free_surface=False,
+        callback=make_wavefield_callback(wavefield_snapshots_shot1),
     )
 
     receiver_traces_shot2 = simulate_acoustic_wavefield(
@@ -181,6 +216,7 @@ def run_openfwi_simulation(
         receiver_x_positions,
         receiver_z_positions,
         apply_free_surface=False,
+        callback=make_wavefield_callback(wavefield_snapshots_shot2),
     )
 
     time_axis = np.arange(nt) * dt
@@ -198,6 +234,10 @@ def run_openfwi_simulation(
         "dx": dx,
         "dz": dz,
         "model_index": model_index,
+        "wavefield_snapshots_shot1": wavefield_snapshots_shot1,
+        "wavefield_snapshots_shot2": wavefield_snapshots_shot2,
+        "snapshot_stride": snapshot_stride,
+        "time_step": dt,
     }
 
 
@@ -290,4 +330,100 @@ def plot_openfwi_results(
     return figure_path
 
 
-__all__ = ["run_openfwi_simulation", "plot_openfwi_results"]
+def animate_openfwi_wavefields(
+    results: Dict[str, Any],
+    output_dir: Path,
+    show: bool = True,
+    fps: int = 20,
+) -> List[Path]:
+    """Create animated visualisations of the simulated wavefields."""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    model_index = int(results["model_index"])
+    x_positions = results["x_positions"]
+    z_positions = results["z_positions"]
+    time_step = float(results["time_step"])
+    snapshot_stride = int(results["snapshot_stride"])
+
+    animations: List[Path] = []
+    shot_data = [
+        ("shot1", results.get("wavefield_snapshots_shot1", [])),
+        ("shot2", results.get("wavefield_snapshots_shot2", [])),
+    ]
+
+    for shot_label, snapshots in shot_data:
+        if not snapshots:
+            continue
+
+        times = np.arange(len(snapshots)) * time_step * snapshot_stride
+        amplitude = max(np.max(np.abs(snapshot)) for snapshot in snapshots)
+        if amplitude == 0:
+            amplitude = 1.0
+        norm = Normalize(vmin=-amplitude, vmax=amplitude)
+
+        fig, ax = plt.subplots(figsize=(6, 5))
+        extent = [
+            x_positions[0],
+            x_positions[-1],
+            z_positions[-1],
+            z_positions[0],
+        ]
+        image = ax.imshow(
+            snapshots[0],
+            extent=extent,
+            aspect="auto",
+            cmap="seismic",
+            norm=norm,
+        )
+        ax.set_xlabel("X (m)")
+        ax.set_ylabel("Z (m)")
+        title = ax.set_title(f"Wavefield {shot_label.capitalize()} - t={times[0]:.3f}s")
+        fig.colorbar(image, ax=ax, label="Pressure")
+
+        def _update(frame_index: int) -> List[Any]:
+            image.set_data(snapshots[frame_index])
+            title.set_text(
+                f"Wavefield {shot_label.capitalize()} - t={times[frame_index]:.3f}s"
+            )
+            return [image, title]
+
+        anim = animation.FuncAnimation(
+            fig,
+            _update,
+            frames=len(snapshots),
+            interval=1000 / fps,
+            blit=False,
+        )
+
+        gif_path = output_dir / f"openfwi_{shot_label}_model_{model_index:04d}.gif"
+        anim.save(gif_path, writer=animation.PillowWriter(fps=fps))
+        animations.append(gif_path)
+
+        console.print(f"[cyan]Saved animation to:[/cyan] {gif_path}")
+
+        if show:
+            plt.show()
+        plt.close(fig)
+
+    return animations
+
+
+def _strip_absorbing_boundary(
+    pressure_field: np.ndarray, boundary_cell_count: int
+) -> np.ndarray:
+    """Remove the absorbing boundary padding from a wavefield snapshot."""
+    if boundary_cell_count <= 0:
+        return pressure_field.copy()
+
+    interior = pressure_field[
+        boundary_cell_count:-boundary_cell_count or None,
+        boundary_cell_count:-boundary_cell_count or None,
+    ]
+    return interior.copy()
+
+__all__ = [
+    "run_openfwi_simulation",
+    "plot_openfwi_results",
+    "animate_openfwi_wavefields",
+]
