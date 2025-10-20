@@ -1,0 +1,77 @@
+# config.yaml
+# Full configuration file for the 2D acoustic wave simulator (OpenANFWI prototype)
+
+# ==========================================================
+# Grid parameters
+# ==========================================================
+grid:
+  nx: 200          # number of grid points along x
+  nz: 150          # number of grid points along z
+  dx: 10.0         # grid spacing in x (meters)
+  dz: 10.0         # grid spacing in z (meters)
+
+# ==========================================================
+# Velocity model
+# ==========================================================
+velocity:
+  c0: 2000.0       # average velocity in m/s
+  # cmap: "velocity_model.npy"   # optional: path to .npy or image defining spatial velocity map
+
+# ==========================================================
+# Simulation parameters
+# ==========================================================
+simulation:
+  nt: 10000           # number of time steps
+  dt: 0.001          # time step (s)
+  output_interval: 50 # steps between plot updates
+  damping: 0.0        # damping coefficient (0 = none)
+  save_snapshots: false # whether to save frames to disk
+  snapshot_dir: "outputs/" # directory for saved snapshots
+
+# ==========================================================
+# Source definition
+# ==========================================================
+source:
+  x: 100.0          # x-position of the source in meters
+  z: 50.0           # z-position of the source in meters
+  frequency: 15.0   # dominant frequency (Hz)
+  amplitude: 1.0    # amplitude of the Ricker wavelet
+  type: "ricker"    # source type: ricker | sine | impulse
+  delay: 0.05       # delay time to center the Ricker wavelet (s)
+
+# ==========================================================
+# Plot customization
+# ==========================================================
+plot:
+  title: "Acoustic Wave Simulation"
+  xlabel: "Distance X (m)"
+  ylabel: "Depth Z (m)"
+  colormap: "viridis"
+
+  # Background and borders
+  background_color: "black"
+  border_color: "white"
+  border_thickness: 2.0
+
+  # Tick and axis styling
+  tick_color: "white"
+  tick_labelsize: 10
+  axis_label_color: "white"
+  axis_label_size: 12
+
+  # Legend and title
+  title_color: "white"
+  title_size: 14
+  legend_color: "white"
+  legend_linewidth: 1.5
+
+  # Source marker
+  source_marker: "★"
+  source_color: "red"
+  source_size: 120
+
+  # Additional style options
+  grid_visible: false       # toggle background grid
+  show_colorbar: true       # display colorbar on plots
+  vmin: null                # optional fixed min value for color scale
+  vmax: null                # optional fixed max value for color scale
