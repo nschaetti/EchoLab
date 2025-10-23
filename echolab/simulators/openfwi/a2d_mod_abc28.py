@@ -10,7 +10,10 @@ edges to emulate an infinite half-space.
 import numpy as np
 
 
-def pad_velocity_model(velocity_model, boundary_cell_count):
+def pad_velocity_model(
+    velocity_model: np.ndarray,
+    boundary_cell_count: int
+):
     """
     Pad the velocity model with a buffer of mirrored values.
 
@@ -29,9 +32,13 @@ def pad_velocity_model(velocity_model, boundary_cell_count):
         ((boundary_cell_count, boundary_cell_count), (boundary_cell_count, boundary_cell_count)),
         mode="edge",
     )
+# end def pad_velocity_model
 
 
-def extend_source_wavelet(source_signal, num_time_steps):
+def extend_source_wavelet(
+    source_signal: np.ndarray,
+    num_time_steps: int
+):
     """
     Ensure the source wavelet spans the entire simulation time.
 
@@ -45,19 +52,21 @@ def extend_source_wavelet(source_signal, num_time_steps):
     source_signal = np.asarray(source_signal).flatten()
     if source_signal.size >= num_time_steps:
         return source_signal
+    # end if
 
     extended_wavelet = np.zeros(num_time_steps, dtype=source_signal.dtype)
     extended_wavelet[:source_signal.size] = source_signal
     return extended_wavelet
+# end def extend_source_wavelet
 
 
 def map_coordinates_to_grid_indices(
-    source_x_m,
-    source_z_m,
-    receiver_x_m,
-    receiver_z_m,
-    grid_spacing,
-    boundary_cell_count,
+    source_x_m: float,
+    source_z_m: float,
+    receiver_x_m: np.ndarray,
+    receiver_z_m: np.ndarray,
+    grid_spacing: float,
+    boundary_cell_count: int
 ):
     """
     Convert physical source/receiver coordinates into grid indices.
@@ -85,12 +94,18 @@ def map_coordinates_to_grid_indices(
     # Push grid indices one cell deeper when source/receivers sit at the surface.
     if abs(source_z_m) < 0.5:
         source_z_idx += 1
+    # end if
     receiver_z_idx += (np.abs(receiver_z_m) < 0.5).astype(int)
 
     return source_x_idx, source_z_idx, receiver_x_idx, receiver_z_idx
+# end def map_coordinates_to_grid_indices
 
 
-def compute_absorbing_boundary_mask(padded_velocity_model, boundary_cell_count, grid_spacing):
+def compute_absorbing_boundary_mask(
+    padded_velocity_model: np.ndarray,
+    boundary_cell_count: int,
+    grid_spacing: float
+):
     """
     Build a quadratic damping mask mimicking a viscous sponge boundary.
 
@@ -106,6 +121,7 @@ def compute_absorbing_boundary_mask(padded_velocity_model, boundary_cell_count, 
 
     if boundary_cell_count <= 0:
         return absorbing_mask
+    # end if
 
     nz_tot, nx_tot = padded_velocity_model.shape
     velocity_min = np.min(padded_velocity_model)
@@ -118,29 +134,32 @@ def compute_absorbing_boundary_mask(padded_velocity_model, boundary_cell_count, 
     for depth_index in range(nz_tot):
         absorbing_mask[depth_index, 0:boundary_cell_count] = edge_profile[::-1]
         absorbing_mask[depth_index, nx_tot - boundary_cell_count :] = edge_profile
+    # end for
 
     interior_start = boundary_cell_count
     interior_end = nx_tot - boundary_cell_count
     for lateral_index in range(interior_start, interior_end):
         absorbing_mask[0:boundary_cell_count, lateral_index] = edge_profile[::-1]
         absorbing_mask[nz_tot - boundary_cell_count :, lateral_index] = edge_profile
+    # end for
 
     return absorbing_mask
+# end def compute_absorbing_boundary_mask
 
 
 def simulate_acoustic_wavefield(
-    velocity_model,
-    absorbing_boundary_thickness,
-    grid_spacing,
-    num_time_steps,
-    time_step,
-    source_wavelet,
-    source_x_m,
-    source_z_m,
-    receiver_x_m,
-    receiver_z_m,
-    apply_free_surface,
-    callback=None,
+    velocity_model: np.ndarray,
+    absorbing_boundary_thickness: int,
+    grid_spacing: float,
+    num_time_steps: int,
+    time_step: float,
+    source_wavelet: np.ndarray,
+    source_x_m: float,
+    source_z_m: float,
+    receiver_x_m: np.ndarray,
+    receiver_z_m: np.ndarray,
+    apply_free_surface: bool,
+    callback: callable = None
 ):
     """
     Propagate a 2D acoustic wavefield with an absorbing fringe.
@@ -175,9 +194,15 @@ def simulate_acoustic_wavefield(
     STENCIL_C4 = 8.0 / 315.0
     STENCIL_C5 = -1.0 / 560.0
 
-    padded_velocity = pad_velocity_model(velocity_model, absorbing_boundary_thickness)
+    padded_velocity = pad_velocity_model(
+        velocity_model,
+        absorbing_boundary_thickness
+    )
+
     absorbing_boundary_mask = compute_absorbing_boundary_mask(
-        padded_velocity, absorbing_boundary_thickness, grid_spacing
+        padded_velocity,
+        absorbing_boundary_thickness,
+        grid_spacing
     )
 
     courant_number_squared = (padded_velocity * time_step / grid_spacing) ** 2
@@ -188,6 +213,7 @@ def simulate_acoustic_wavefield(
     source_weighting = (padded_velocity * time_step) ** 2
 
     source_time_series = extend_source_wavelet(source_wavelet, num_time_steps)
+
     (
         source_x_index,
         source_z_index,
@@ -256,15 +282,20 @@ def simulate_acoustic_wavefield(
             next_pressure_field[free_surface_depth - 1 : free_surface_depth - 5 : -1, :] = -next_pressure_field[
                 free_surface_depth + 1 : free_surface_depth + 5, :
             ]
+        # end if
 
         if callback is not None:
             callback(next_pressure_field, time_step_index, time_step, absorbing_boundary_thickness)
+        # end if
 
         for receiver_index in range(receiver_count):
             receiver_pressure_traces[time_step_index, receiver_index] = next_pressure_field[
                 receiver_z_indices[receiver_index], receiver_x_indices[receiver_index]
             ]
+        # end for
 
         previous_pressure_field, current_pressure_field = current_pressure_field, next_pressure_field
+    # end for
 
     return receiver_pressure_traces
+# end def simulate_acoustic_wavefield
