@@ -5,12 +5,12 @@ This module provides CLI commands to generate various wavelets used in seismic m
 and display them in plots.
 """
 
+# Imports
 import click
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
 from typing import Optional
-
 from echolab.modeling.wavelets import ricker
 
 
@@ -20,6 +20,7 @@ def wavelets() -> None:
     Click group for wavelet-related commands.
     """
     pass
+# end wavelets
 
 
 @wavelets.command(help="Generate and visualize a Ricker wavelet.")

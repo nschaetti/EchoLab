@@ -294,7 +294,7 @@ def openfwi(
             writing files to disk.
     """
     try:
-        console.print("[green]Running OpenFWI simulation...[/green]")
+        console.log("[green]Running OpenFWI simulation...[/green]")
         results = run_openfwi_simulation(
             models_path=models_path,
             model_index=model_index,
@@ -305,20 +305,22 @@ def openfwi(
     # end try
 
     # Static figure summarizing the simulation; optionally shown interactively.
-    console.print("[green]Plotting simulation output[/green]")
-    figure_path = plot_openfwi_results(
-        results,
-        output_dir=output_dir,
-        show=not no_visualization,
-    )
+    if not no_visualization:
+        console.log("[green]Plotting simulation output[/green]")
+        figure_path = plot_openfwi_results(
+            results,
+            output_dir=output_dir
+        )
+    # end if
 
     # Sequence of animations illustrating wavefield evolution for each survey.
-    console.print("[green]Animating OpenFWI simulation...[/green]")
-    animation_paths = animate_openfwi_wavefields(
-        results,
-        output_dir=output_dir,
-        show=not no_visualization,
-    )
+    if not no_visualization:
+        console.log("[green]Animating OpenFWI simulation...[/green]")
+        animation_paths = animate_openfwi_wavefields(
+            results=results,
+            output_dir=output_dir
+        )
+    # end if
 
     # Present a human-friendly summary of what was just generated and where.
     info_table = Table(title="OpenFWI Simulation Summary")

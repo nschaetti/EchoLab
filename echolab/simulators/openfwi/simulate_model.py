@@ -13,7 +13,6 @@ import yaml
 from rich.console import Console
 from matplotlib.colors import Normalize
 from echolab.modeling import ricker
-
 from .a2d_mod_abc28 import simulate_acoustic_wavefield
 
 
@@ -150,18 +149,18 @@ def run_openfwi_simulation(
     velocity_model = models[model_index]
 
     # Print informations
-    console.print(f"[yellow]nx, nz[/]: {nx}, {nz}")
-    console.print(f"[yellow]dx, dz[/] {dx}, {dz}")
-    console.print(f"[yellow]sx, sz[/] {sx}, {sz}")
-    console.print(f"[yellow]min_x, max_x[/] {min_x}, {max_x}")
-    console.print(f"[yellow]min_z, max_z[/] {min_z}, {max_z}")
-    console.print(f"[yellow]Grid size:[/] {nz} x {nx}")
-    console.print(f"[yellow]Frequency:[/] {freq} Hz")
-    console.print(f"[yellow]Time steps:[/] {nt} with dt = {dt}")
-    console.print(f"[yellow]Velocity mean:[/] {np.mean(velocity_model)}")
-    console.print(f"[yellow]Velocity std:[/] {np.std(velocity_model)}")
-    console.print(f"[yellow]Velocity min:[/] {np.min(velocity_model)}")
-    console.print(f"[yellow]Velocity max:[/] {np.max(velocity_model)}")
+    console.log(f"[yellow]nx, nz[/]: {nx}, {nz}")
+    console.log(f"[yellow]dx, dz[/] {dx}, {dz}")
+    console.log(f"[yellow]sx, sz[/] {sx}, {sz}")
+    console.log(f"[yellow]min_x, max_x[/] {min_x}, {max_x}")
+    console.log(f"[yellow]min_z, max_z[/] {min_z}, {max_z}")
+    console.log(f"[yellow]Grid size:[/] {nz} x {nx}")
+    console.log(f"[yellow]Frequency:[/] {freq} Hz")
+    console.log(f"[yellow]Time steps:[/] {nt} with dt = {dt}")
+    console.log(f"[yellow]Velocity mean:[/] {np.mean(velocity_model)}")
+    console.log(f"[yellow]Velocity std:[/] {np.std(velocity_model)}")
+    console.log(f"[yellow]Velocity min:[/] {np.min(velocity_model)}")
+    console.log(f"[yellow]Velocity max:[/] {np.max(velocity_model)}")
 
     # X and Z positions on the grid
     x_positions = np.arange(nx) * dx
@@ -190,8 +189,8 @@ def run_openfwi_simulation(
     receiver_z_positions = np.ones_like(receiver_x_positions) * gz_value
 
     # Print receiver information
-    console.print(f"[yellow]gx[/] {receiver_x_positions[:10]}..{receiver_x_positions[-10:]}")
-    console.print(f"[yellow]gz[/] {receiver_z_positions[:10]}..{receiver_z_positions[-10:]}")
+    console.log(f"[yellow]gx[/] {receiver_x_positions[:10]}..{receiver_x_positions[-10:]}")
+    console.log(f"[yellow]gz[/] {receiver_z_positions[:10]}..{receiver_z_positions[-10:]}")
 
     # ...
     snapshot_stride = max(1, int(config.get("snapshot_stride", 5)))
@@ -215,16 +214,17 @@ def run_openfwi_simulation(
         ) -> None:
             if time_step_index % snapshot_stride != 0:
                 return
-
+            # end if
             store.append(
                 _strip_absorbing_boundary(
-                    pressure_field, boundary_cell_count
+                    pressure_field,
+                    boundary_cell_count
                 )
             )
         return _callback
     # end def make_wavefield_callback
 
-    receiver_traces_shot1 = simulate_acoustic_wavefield(
+    receiver_traces_shot = simulate_acoustic_wavefield(
         velocity_model=velocity_model,
         absorbing_boundary_thickness=nbc,
         grid_spacing=dx,
@@ -261,7 +261,7 @@ def run_openfwi_simulation(
         "velocity_model": velocity_model,
         "x_positions": x_positions,
         "z_positions": z_positions,
-        "receiver_traces_shot1": receiver_traces_shot1,
+        "receiver_traces_shot": receiver_traces_shot,
         "receiver_indices": receiver_indices + 1,
         "receiver_x_positions": receiver_x_positions,
         "receiver_z_positions": receiver_z_positions,
@@ -278,8 +278,7 @@ def run_openfwi_simulation(
 
 def plot_openfwi_results(
     results: Dict[str, Any],
-    output_dir: Path,
-    show: bool = True,
+    output_dir: Path
 ) -> Path:
     """Visualise the OpenFWI simulation outputs and save the figure.
 
@@ -289,8 +288,6 @@ def plot_openfwi_results(
         Dictionary produced by :func:`run_openfwi_simulation`.
     output_dir:
         Directory where the composite figure should be written.
-    show:
-        When True, display the figure interactively after saving.
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -299,7 +296,7 @@ def plot_openfwi_results(
     velocity_model = results["velocity_model"]
     x_positions = results["x_positions"]
     z_positions = results["z_positions"]
-    receiver_traces_shot1 = results["receiver_traces_shot1"]
+    receiver_traces_shot1 = results["receiver_traces_shot"]
     time_axis = results["time_axis"]
     receiver_indices = results["receiver_indices"]
     model_index = int(results["model_index"])
@@ -353,7 +350,7 @@ def plot_openfwi_results(
     figure_path = output_dir / f"openfwi_simulation_model_{model_index:04d}.png"
     fig.savefig(figure_path, dpi=150)
 
-    console.print(f"[cyan]Saved figure to:[/cyan] {figure_path}")
+    console.log(f"[cyan]Saved figure to:[/cyan] {figure_path}")
 
     if show:
         plt.show()
@@ -368,13 +365,12 @@ def plot_openfwi_results(
 def animate_openfwi_wavefields(
     results: Dict[str, Any],
     output_dir: Path,
-    show: bool = True,
     fps: int = 20,
     velocity_alpha: float = 0.5,
     wavefield_alpha: Optional[float] = None,
 ) -> List[Path]:
     """
-    Create animated visualisations of the simulated wavefields.
+    Create animated visualizations of the simulated wavefields.
 
     Parameters
     ----------
@@ -382,8 +378,6 @@ def animate_openfwi_wavefields(
         Dictionary produced by :func:`run_openfwi_simulation`.
     output_dir:
         Directory where the animations should be saved.
-    show:
-        When True, display each animation interactively after saving.
     fps:
         Frame rate (frames per second) for the generated GIF.
     velocity_alpha:
@@ -393,9 +387,11 @@ def animate_openfwi_wavefields(
         Opacity applied to the wavefield. When ``None``, an opacity is derived
         automatically so the velocity background remains visible.
     """
+    # Output directory
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Parameters
     model_index = int(results["model_index"])
     x_positions = results["x_positions"]
     z_positions = results["z_positions"]
@@ -406,171 +402,172 @@ def animate_openfwi_wavefields(
     receiver_x_positions = results.get("receiver_x_positions")
 
     animations: List[Path] = []
-    shot_data = [
-        ("shot1", results.get("wavefield_snapshots_shot1", [])),
-        ("shot2", results.get("wavefield_snapshots_shot2", [])),
-    ]
 
+    # Snapshot is a list of 500x500 np.array
+    try:
+        snapshots = results["wavefield_snapshots_shot"]
+    except KeyError:
+        raise RuntimeError(f"Wavefield snapshot data not found in results.")
+    # end try
+
+    # Alpha
     if wavefield_alpha is None:
         wavefield_alpha = max(0.2, 1.0 - float(np.clip(velocity_alpha, 0.0, 1.0)))
     else:
         wavefield_alpha = float(np.clip(wavefield_alpha, 0.0, 1.0))
     # end if
 
-    for shot_label, snapshots in shot_data:
-        if not snapshots:
-            continue
-        # end if
+    times = np.arange(len(snapshots)) * time_step * snapshot_stride
+    amplitude = max(np.max(np.abs(snapshot)) for snapshot in snapshots)
+    if amplitude == 0:
+        amplitude = 1.0
+    # end if
+    norm = Normalize(vmin=-amplitude, vmax=amplitude)
 
-        times = np.arange(len(snapshots)) * time_step * snapshot_stride
-        amplitude = max(np.max(np.abs(snapshot)) for snapshot in snapshots)
-        if amplitude == 0:
-            amplitude = 1.0
-        # end if
-        norm = Normalize(vmin=-amplitude, vmax=amplitude)
+    # Subplot
+    fig, (ax, ax_receivers) = plt.subplots(
+        ncols=2,
+        figsize=(12, 4),
+        dpi=150,
+        gridspec_kw={"width_ratios": [2, 2]},
+    )
 
-        fig, (ax, ax_receivers) = plt.subplots(
-            ncols=2,
-            figsize=(12, 4),
-            dpi=150,
-            gridspec_kw={"width_ratios": [2, 2]},
-        )
-        extent = [
-            x_positions[0],
-            x_positions[-1],
-            z_positions[-1],
-            z_positions[0],
-        ]
+    extent = [
+        x_positions[0],
+        x_positions[-1],
+        z_positions[-1],
+        z_positions[0],
+    ]
 
-        if velocity_alpha > 0:
-            ax.imshow(
-                velocity_model,
-                extent=extent,
-                aspect="auto",
-                cmap="viridis",
-                alpha=velocity_alpha,
-                zorder=0,
-            )
-        # end if
-
-        image = ax.imshow(
-            snapshots[0],
+    if velocity_alpha > 0:
+        ax.imshow(
+            velocity_model,
             extent=extent,
             aspect="auto",
-            cmap="seismic",
-            norm=norm,
-            alpha=wavefield_alpha,
-            zorder=1,
+            cmap="viridis",
+            alpha=velocity_alpha,
+            zorder=0,
         )
-        ax.set_xlabel("X (m)")
-        ax.set_ylabel("Z (m)")
-        title = ax.set_title(f"Wavefield {shot_label.capitalize()} - t={times[0]:.3f}s")
-        fig.colorbar(image, ax=ax, label="Pressure")
+    # end if
 
-        receiver_traces_key = f"receiver_traces_{shot_label}"
-        receiver_traces = results.get(receiver_traces_key)
-        if receiver_traces is None and shot_label == "shot1":
-            receiver_traces = results.get("receiver_traces_shot1")
+    image = ax.imshow(
+        snapshots[0],
+        extent=extent,
+        aspect="auto",
+        cmap="seismic",
+        norm=norm,
+        alpha=wavefield_alpha,
+        zorder=1,
+    )
+
+    ax.set_xlabel("X (m)")
+    ax.set_ylabel("Z (m)")
+    title = ax.set_title(f"Wavefield - t={times[0]:.3f}s")
+    fig.colorbar(image, ax=ax, label="Pressure")
+
+    receiver_traces_key = f"receiver_traces_shot"
+    receiver_traces = results.get(receiver_traces_key)
+    if receiver_traces is None and shot_label == "shot1":
+        receiver_traces = results.get("receiver_traces_shot")
+    # end if
+
+    seismo_image = None
+    partial_traces = None
+    receiver_extent = None
+    if (
+        receiver_traces is not None
+        and receiver_x_positions is not None
+        and len(receiver_traces) > 0
+        and len(receiver_x_positions) > 0
+    ):
+        receiver_traces = np.asarray(receiver_traces)
+        seismo_vlim = np.max(np.abs(receiver_traces))
+        if seismo_vlim == 0:
+            seismo_vlim = 1.0
         # end if
-
-        seismo_image = None
-        partial_traces = None
-        receiver_extent = None
-        if (
-            receiver_traces is not None
-            and receiver_x_positions is not None
-            and len(receiver_traces) > 0
-            and len(receiver_x_positions) > 0
-        ):
-            receiver_traces = np.asarray(receiver_traces)
-            seismo_vlim = np.max(np.abs(receiver_traces))
-            if seismo_vlim == 0:
-                seismo_vlim = 1.0
-            # end if
-            partial_traces = np.ma.masked_all(receiver_traces.shape, dtype=float)
-            receiver_extent = (
-                receiver_x_positions[0],
-                receiver_x_positions[-1],
-                time_axis[-1],
-                time_axis[0],
-            )
-            ax_receivers.set_facecolor("white")
-            seismo_image = ax_receivers.imshow(
-                partial_traces,
-                extent=receiver_extent,
-                aspect="auto",
-                cmap="gray",
-                vmin=-seismo_vlim,
-                vmax=seismo_vlim,
-                interpolation="nearest",
-            )
-            ax_receivers.set_title("Receiver Gather")
-            ax_receivers.set_xlabel("Receiver position (m)")
-            ax_receivers.set_ylabel("Time (s)")
-            fig.colorbar(seismo_image, ax=ax_receivers, label="Amplitude")
-            ax_receivers.set_ylim(time_axis[-1], time_axis[0])
-        else:
-            ax_receivers.axis("off")
-            ax_receivers.text(
-                0.5,
-                0.5,
-                "No receiver data available",
-                ha="center",
-                va="center",
-                transform=ax_receivers.transAxes,
-            )
-        # end if
-
-        def _update(frame_index: int) -> List[Any]:
-            image.set_data(snapshots[frame_index])
-            title.set_text(
-                f"Wavefield {shot_label.capitalize()} - t={times[frame_index]:.3f}s"
-            )
-            artists: List[Any] = [image, title]
-            if seismo_image is not None and partial_traces is not None:
-                current_time = times[frame_index]
-                if frame_index == 0 and np.isclose(current_time, 0.0):
-                    sample_count = 0
-                else:
-                    sample_index = int(
-                        round(current_time / time_step)
-                    )
-                    sample_count = min(
-                        sample_index + 1,
-                        receiver_traces.shape[0],
-                    )
-                # end if
-                partial_traces.mask[...] = True
-                if sample_count > 0:
-                    partial_traces.data[-sample_count:, :] = receiver_traces[
-                        :sample_count, :
-                    ]
-                    partial_traces.mask[-sample_count:, :] = False
-                # end if
-                seismo_image.set_data(partial_traces)
-                artists.append(seismo_image)
-            # end if
-            return artists
-        # end def _update
-
-        anim = animation.FuncAnimation(
-            fig,
-            _update,
-            frames=len(snapshots),
-            interval=1000 / fps,
-            blit=False,
+        partial_traces = np.ma.masked_all(receiver_traces.shape, dtype=float)
+        receiver_extent = (
+            receiver_x_positions[0],
+            receiver_x_positions[-1],
+            time_axis[-1],
+            time_axis[0],
         )
+        ax_receivers.set_facecolor("white")
+        seismo_image = ax_receivers.imshow(
+            partial_traces,
+            extent=receiver_extent,
+            aspect="auto",
+            cmap="gray",
+            vmin=-seismo_vlim,
+            vmax=seismo_vlim,
+            interpolation="nearest",
+        )
+        ax_receivers.set_title("Receiver Gather")
+        ax_receivers.set_xlabel("Receiver position (m)")
+        ax_receivers.set_ylabel("Time (s)")
+        fig.colorbar(seismo_image, ax=ax_receivers, label="Amplitude")
+        ax_receivers.set_ylim(time_axis[-1], time_axis[0])
+    else:
+        ax_receivers.axis("off")
+        ax_receivers.text(
+            0.5,
+            0.5,
+            "No receiver data available",
+            ha="center",
+            va="center",
+            transform=ax_receivers.transAxes,
+        )
+    # end if
 
-        gif_path = output_dir / f"openfwi_{shot_label}_model_{model_index:04d}.gif"
-        anim.save(gif_path, writer=animation.PillowWriter(fps=fps))
-        animations.append(gif_path)
+    def _update(frame_index: int) -> List[Any]:
+        image.set_data(snapshots[frame_index])
+        title.set_text(
+            f"Wavefield - t={times[frame_index]:.3f}s"
+        )
+        artists: List[Any] = [image, title]
+        if seismo_image is not None and partial_traces is not None:
+            current_time = times[frame_index]
+            if frame_index == 0 and np.isclose(current_time, 0.0):
+                sample_count = 0
+            else:
+                sample_index = int(
+                    round(current_time / time_step)
+                )
+                sample_count = min(
+                    sample_index + 1,
+                    receiver_traces.shape[0],
+                )
+            # end if
+            partial_traces.mask[...] = True
+            if sample_count > 0:
+                partial_traces.data[-sample_count:, :] = receiver_traces[
+                    :sample_count, :
+                ]
+                partial_traces.mask[-sample_count:, :] = False
+            # end if
+            seismo_image.set_data(partial_traces)
+            artists.append(seismo_image)
+        # end if
+        return artists
+    # end def _update
 
-        console.print(f"[cyan]Saved animation to:[/cyan] {gif_path}")
+    # Animation
+    anim = animation.FuncAnimation(
+        fig,
+        _update,
+        frames=len(snapshots),
+        interval=1000 / fps,
+        blit=False,
+    )
 
-        if show:
-            plt.show()
-        plt.close(fig)
-    # end for
+    # Save GIF animation
+    gif_path = output_dir / f"openfwi_model_{model_index:04d}.gif"
+    anim.save(gif_path, writer=animation.PillowWriter(fps=fps))
+    animations.append(gif_path)
+    console.print(f"[cyan]Saved animation to:[/cyan] {gif_path}")
+
+    plt.show()
+    plt.close(fig)
 
     return animations
 # end def animate_openfwi_wavefields
