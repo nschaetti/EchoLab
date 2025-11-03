@@ -221,6 +221,12 @@ def simulate_acoustic_wavefield(
     Returns:
         numpy.ndarray: Pressure traces recorded at the receivers (time, receiver).
     """
+    #
+    # STEP 1: Defining the problem
+    # (x_i, z_i) = (i * delta x, j * delta z)
+    # tn = n * delta t
+    #
+
     # Convert receiver positions to numpy arrays for consistent handling
     # Programming: Ensures input arrays are numpy arrays for vectorized operations
     # Physics: Prepares receiver coordinates for later mapping to grid indices
@@ -233,6 +239,12 @@ def simulate_acoustic_wavefield(
     # Physics: Will store the pressure time series at each receiver location
     receiver_pressure_traces = np.zeros((num_time_steps, receiver_count))
 
+    #
+    # STEP 2: Defining the spatial stencil
+    # Coefficient for 2D laplacian discrete approximation
+    # 2D Laplacian => weighted sum of neighbour
+    #
+
     # Define 8th-order accurate spatial finite-difference stencil coefficients
     # Programming: Constants used in the Laplacian approximation
     # Physics: Higher-order stencils reduce numerical dispersion, improving accuracy of wave propagation
@@ -241,6 +253,11 @@ def simulate_acoustic_wavefield(
     STENCIL_C3 = -1.0 / 5.0     # 2-cell offset coefficient
     STENCIL_C4 = 8.0 / 315.0    # 3-cell offset coefficient
     STENCIL_C5 = -1.0 / 560.0   # 4-cell offset coefficient
+
+    #
+    # STEP 3: border condition
+    # Add margin to pressure field with absorbing condition.
+    #
 
     # Extend the velocity model with absorbing boundary layers
     # Programming: Creates a padded array with additional cells around the original model
@@ -259,6 +276,12 @@ def simulate_acoustic_wavefield(
         grid_spacing=grid_spacing
     )
 
+    #
+    # STEP 4: Courant-Friedrichs-Lewy condition number
+    # C = (v * delta t) / (delta x)
+    # The wave cannot skip on cell
+    #
+
     # Calculate the squared Courant number (stability parameter)
     # Programming: Vectorized computation for the entire grid
     # Physics: Relates to the CFL condition for numerical stability; should be ≤ 1 for stable simulation
@@ -268,6 +291,11 @@ def simulate_acoustic_wavefield(
     # Programming: Element-wise multiplication to prepare damping coefficients
     # Physics: Controls the rate of energy absorption at boundaries
     damping_profile = absorbing_boundary_mask * time_step
+
+    #
+    # STEP 5: temporal coefficients
+    # Temporal discretization
+    #
 
     # Compute coefficients for the finite-difference time-stepping scheme
     # Programming: Vectorized operations to prepare update equation coefficients

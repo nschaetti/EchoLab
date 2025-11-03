@@ -1,9 +1,13 @@
 """
-High-level helpers to run OpenFWI velocity model simulations.
+OpenFWI Acoustic Wavefield Simulation.
+
+This module provides functions to run and visualize acoustic wavefield simulations
+using the OpenFWI approach.
 """
 
-# Imports
 from __future__ import annotations
+import os
+import tempfile
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from matplotlib import animation
@@ -11,60 +15,88 @@ import matplotlib.pyplot as plt
 import numpy as np
 import yaml
 from rich.console import Console
+from rich.progress import Progress, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn
 from matplotlib.colors import Normalize
-from echolab.modeling import ricker
-from .a2d_mod_abc28 import simulate_acoustic_wavefield
+
+# Import from the new modeling subpackage
+from echolab.modeling import (
+    OpenFWISimulator, 
+    RickerWavelet, 
+    AcousticPressureField,
+    strip_absorbing_boundary,
+    ricker,
+    VelocityModel2D
+)
 
 
 console = Console()
 
 
 def _load_velocity_models(
-        models_path: Path
-) -> np.ndarray:
+    models_path: Path
+) -> List[VelocityModel2D]:
     """
-    Load the velocity models stored in a NumPy ``.npy`` file.
+    Load velocity models from a NumPy file and convert to VelocityModel2D objects.
+
+    Args:
+        models_path (Path): Path to the .npy file containing velocity models.
+
+    Returns:
+        List[VelocityModel2D]: List of VelocityModel2D objects.
     """
     models_path = Path(models_path)
     if not models_path.exists():
-        raise FileNotFoundError(f"Velocity models file '{models_path}' not found")
+        raise FileNotFoundError(f"Models file not found: {models_path}")
     # end if
 
-    with models_path.open("rb") as handle:
-        models = np.load(handle)
-    # end with
+    try:
+        models_array = np.load(models_path)
+    except Exception as e:
+        raise IOError(f"Failed to load models from {models_path}: {e}")
+    # end try
 
-    if models.ndim == 2:
-        models = np.expand_dims(models, axis=0)
-    elif models.ndim != 3:
+    if models_array.ndim != 3:
         raise ValueError(
-            f"Velocity models array must be 2D or 3D; got shape {models.shape}"
+            f"Expected 3D array of models with shape (n_models, nz, nx), "
+            f"got shape {models_array.shape}"
         )
     # end if
 
-    return models
+    # Convert to list of VelocityModel2D objects
+    velocity_models = []
+    for i in range(models_array.shape[0]):
+        velocity_models.append(VelocityModel2D(models_array[i]))
+    # end for
+
+    return velocity_models
 # end def _load_velocity_models
 
 
 def _load_simulation_config(
-        config_path: Path
+    config_path: Path
 ) -> Dict[str, Any]:
     """
-    Load the OpenFWI simulation configuration from YAML.
+    Load simulation configuration from a YAML file.
+
+    Args:
+        config_path (Path): Path to the YAML configuration file.
+
+    Returns:
+        Dict[str, Any]: Dictionary containing simulation parameters.
     """
     config_path = Path(config_path)
     if not config_path.exists():
-        raise FileNotFoundError(f"Configuration file '{config_path}' not found")
+        raise FileNotFoundError(f"Configuration file not found: {config_path}")
     # end if
 
-    with config_path.open("r", encoding="utf-8") as handle:
-        config = yaml.safe_load(handle)
-    # end with
+    try:
+        with open(config_path, "r") as f:
+            config = yaml.safe_load(f)
+    except Exception as e:
+        raise IOError(f"Failed to load configuration from {config_path}: {e}")
+    # end try
 
-    if not isinstance(config, dict):
-        raise ValueError("Configuration file must contain a mapping of parameters")
-    # end if
-
+    # Check for required keys
     required_keys = {
         "dx",
         "dz",
@@ -87,6 +119,57 @@ def _load_simulation_config(
     return config
 # end def _load_simulation_config
 
+
+def run_openfwi_simulation_with_progress(
+    simulator: OpenFWISimulator,
+    simulation_params: Dict[str, Any],
+    num_time_steps: int
+) -> Dict[str, Any]:
+    """
+    Run the OpenFWI simulation with a progress bar.
+    
+    This is a wrapper around the OpenFWISimulator.simulate method that adds a progress bar
+    to track the simulation progress.
+    
+    Parameters
+    ----------
+    simulator:
+        The OpenFWISimulator instance to use for simulation.
+    simulation_params:
+        Dictionary of parameters to pass to the simulate method.
+    num_time_steps:
+        The total number of time steps in the simulation.
+        
+    Returns
+    -------
+    dict
+        The simulation results.
+    """
+    # Get parameters
+    store_wavefields = simulation_params.get("store_wavefields", False)
+    wavefields = []
+    
+    # Create a copy of simulation parameters without callback
+    sim_params = simulation_params.copy()
+    if "callback" in sim_params:
+        del sim_params["callback"]
+    
+    # Create progress bar
+    with Progress(
+        TextColumn("[bold blue]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeRemainingColumn(),
+    ) as progress:
+        task = progress.add_task("[cyan]Running simulation...", total=num_time_steps)
+        
+        # Run the simulation
+        sim_results = simulator.simulate(**sim_params)
+        
+        # Update progress bar to completion
+        progress.update(task, completed=num_time_steps)
+    
+    return sim_results
 
 def run_openfwi_simulation(
     models_path: Path,
@@ -115,8 +198,8 @@ def run_openfwi_simulation(
         A dictionary containing the velocity model, simulated shot gathers, and
         auxiliary metadata required for plotting.
     """
-    models = _load_velocity_models(models_path)
-    n_models, nz, nx = models.shape
+    velocity_models = _load_velocity_models(models_path)
+    n_models = len(velocity_models)
 
     if not 0 <= model_index < n_models:
         raise IndexError(f"Model index {model_index} out of bounds (0 <= idx < {n_models})")
@@ -125,9 +208,15 @@ def run_openfwi_simulation(
     # Load configuration
     config = _load_simulation_config(config_path)
 
-    # Simulation parameters
-    dx = float(config["dx"])
-    dz = float(config["dz"])
+    # Get current model
+    velocity_model = velocity_models[model_index]
+    
+    # Get model dimensions and properties
+    nz, nx = velocity_model.shape
+    dx = velocity_model.dx if hasattr(velocity_model, 'dx') else float(config["dx"])
+    dz = velocity_model.dz if hasattr(velocity_model, 'dz') else float(config["dz"])
+
+    # Other simulation parameters
     sx = float(config["sx"])
     sz = float(config["sz"])
     nt = int(config["nt"])
@@ -140,13 +229,10 @@ def run_openfwi_simulation(
     gz_value = float(config["gz_value"])
 
     # Limits
-    min_x = 0.0
-    max_x = (nx - 1) * dx
-    min_z = 0.0
-    max_z = (nz - 1) * dz
-
-    # Get current model
-    velocity_model = models[model_index]
+    min_x = velocity_model.x_origin if hasattr(velocity_model, 'x_origin') else 0.0
+    max_x = min_x + (nx - 1) * dx
+    min_z = velocity_model.z_origin if hasattr(velocity_model, 'z_origin') else 0.0
+    max_z = min_z + (nz - 1) * dz
 
     # Print informations
     console.log(f"[yellow]nx, nz[/]: {nx}, {nz}")
@@ -157,14 +243,14 @@ def run_openfwi_simulation(
     console.log(f"[yellow]Grid size:[/] {nz} x {nx}")
     console.log(f"[yellow]Frequency:[/] {freq} Hz")
     console.log(f"[yellow]Time steps:[/] {nt} with dt = {dt}")
-    console.log(f"[yellow]Velocity mean:[/] {np.mean(velocity_model)}")
-    console.log(f"[yellow]Velocity std:[/] {np.std(velocity_model)}")
-    console.log(f"[yellow]Velocity min:[/] {np.min(velocity_model)}")
-    console.log(f"[yellow]Velocity max:[/] {np.max(velocity_model)}")
+    console.log(f"[yellow]Velocity mean:[/] {velocity_model.mean_velocity}")
+    console.log(f"[yellow]Velocity std:[/] {velocity_model.std_velocity}")
+    console.log(f"[yellow]Velocity min:[/] {velocity_model.min_velocity}")
+    console.log(f"[yellow]Velocity max:[/] {velocity_model.max_velocity}")
 
     # X and Z positions on the grid
-    x_positions = np.arange(nx) * dx
-    z_positions = np.arange(nz) * dz
+    x_positions = velocity_model.x if hasattr(velocity_model, 'x') else np.arange(nx) * dx + min_x
+    z_positions = velocity_model.z if hasattr(velocity_model, 'z') else np.arange(nz) * dz + min_z
 
     if not (min_x <= sx <= max_x):
         raise ValueError("Source position sx lies outside the domain")
@@ -173,15 +259,6 @@ def run_openfwi_simulation(
     if not (min_z <= sz <= max_z):
         raise ValueError("Source position sz lies outside the domain")
     # end if
-
-    # Create source perturbation
-    # The perturbation wavelet is at the beginning
-    # of the simulation.
-    source_wavelet, time_vector = ricker(
-        frequency=freq,
-        time_step=dt,
-        num_samples=nt
-    )
 
     # Receiver information
     receiver_indices = np.arange(gx_start, gx_end + 1, gx_step)
@@ -192,73 +269,53 @@ def run_openfwi_simulation(
     console.log(f"[yellow]gx[/] {receiver_x_positions[:10]}..{receiver_x_positions[-10:]}")
     console.log(f"[yellow]gz[/] {receiver_z_positions[:10]}..{receiver_z_positions[-10:]}")
 
-    # ...
+    # Wavefield capture settings
     snapshot_stride = max(1, int(config.get("snapshot_stride", 5)))
     capture_wavefield = bool(config.get("capture_wavefield", True))
 
-    # ...
-    wavefield_snapshots_shot: List[np.ndarray] = []
+    # Create the simulator
+    pressure_field = AcousticPressureField()
+    noise_source = RickerWavelet(freq)
+    simulator = OpenFWISimulator(pressure_field, noise_source)
 
-    def make_wavefield_callback(
-        store: List[np.ndarray],
-    ) -> Optional[Callable[[np.ndarray, int, float, int], None]]:
-        if not capture_wavefield:
-            return None
-        # end if
-
-        def _callback(
-            pressure_field: np.ndarray,
-            time_step_index: int,
-            _time_step: float,
-            boundary_cell_count: int,
-        ) -> None:
-            if time_step_index % snapshot_stride != 0:
-                return
-            # end if
-            store.append(
-                _strip_absorbing_boundary(
-                    pressure_field,
-                    boundary_cell_count
-                )
-            )
-        return _callback
-    # end def make_wavefield_callback
-
-    receiver_traces_shot = simulate_acoustic_wavefield(
-        velocity_model=velocity_model,
-        absorbing_boundary_thickness=nbc,
-        grid_spacing=dx,
-        num_time_steps=nt,
-        time_step=dt,
-        source_wavelet=source_wavelet,
-        source_x_m=sx,
-        source_z_m=sz,
-        receiver_x_m=receiver_x_positions,
-        receiver_z_m=receiver_z_positions,
-        apply_free_surface=False,
-        callback=make_wavefield_callback(wavefield_snapshots_shot),
+    # Set up the simulation parameters
+    simulation_params = {
+        "velocity_model": velocity_model.as_numpy(),  # Convert to numpy array for simulation
+        "grid_spacing": dx,
+        "time_step": dt,
+        "num_time_steps": nt,
+        "source_x_m": sx,
+        "source_z_m": sz,
+        "receiver_x_m": receiver_x_positions,
+        "receiver_z_m": receiver_z_positions,
+        "absorbing_boundary_thickness": nbc,
+        "apply_free_surface": False,
+        "store_wavefields": capture_wavefield
+    }
+    
+    # Run the simulation with progress bar
+    sim_results = run_openfwi_simulation_with_progress(
+        simulator=simulator,
+        simulation_params=simulation_params,
+        num_time_steps=nt
     )
-
-    # print(f"velocity_model: {velocity_model.shape}")
-    # print(f"x_positions: {x_positions}")
-    # print(f"z_positions: {z_positions}")
-    # print(f"receiver_traces_shot1: {receiver_traces_shot1.shape}")
-    # print(f"receiver_indices:{receiver_indices.shape}")
-    # print(f"receiver_x_positions: {receiver_x_positions.shape}")
-    # print(f"receiver_z_positions: {receiver_z_positions.shape}")
-
+    
+    # Extract the receiver data
+    receiver_traces_shot = sim_results["receiver_data"]
+    
+    # Extract the wavefields if captured
+    wavefield_snapshots_shot = []
+    if capture_wavefield and "wavefields" in sim_results:
+        # Apply the snapshot stride
+        wavefield_snapshots_shot = sim_results["wavefields"][::snapshot_stride]
+    
+    # Create the time axis
     time_axis = np.arange(nt) * dt
-
-    # print(f"time_axis: {time_axis.shape}")
-    # print(f"dx: {dx}")
-    # print(f"dz: {dz}")
-    # print(f"model_index: {model_index}")
-    # print(f"wavefield_snapshots_shot: {len(wavefield_snapshots_shot)}")
-    # print(f"snapshot_stride: {snapshot_stride}")
-    # print(f"time_step: {dt}")
-
+    
+    # Return the results in the same format as the original implementation
     return {
-        "velocity_model": velocity_model,
+        "velocity_model": velocity_model,  # Return the VelocityModel2D object
+        "velocity_model_array": velocity_model.as_numpy(),  # Also provide the numpy array for backward compatibility
         "x_positions": x_positions,
         "z_positions": z_positions,
         "receiver_traces_shot": receiver_traces_shot,
@@ -272,13 +329,15 @@ def run_openfwi_simulation(
         "wavefield_snapshots_shot": wavefield_snapshots_shot,
         "snapshot_stride": snapshot_stride,
         "time_step": dt,
+        "grid_spacing": dx,  # Add grid_spacing for compatibility with simulator.visualize
     }
 # end def run_openfwi_simulation
 
 
 def plot_openfwi_results(
     results: Dict[str, Any],
-    output_dir: Path
+    output_dir: Path,
+    show: bool = False
 ) -> Path:
     """Visualise the OpenFWI simulation outputs and save the figure.
 
@@ -288,6 +347,8 @@ def plot_openfwi_results(
         Dictionary produced by :func:`run_openfwi_simulation`.
     output_dir:
         Directory where the composite figure should be written.
+    show:
+        Whether to display the figure interactively.
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -301,52 +362,69 @@ def plot_openfwi_results(
     receiver_indices = results["receiver_indices"]
     model_index = int(results["model_index"])
 
+    # Get velocity model array (handle both VelocityModel objects and numpy arrays)
+    if hasattr(velocity_model, 'as_numpy'):
+        velocity_array = velocity_model.as_numpy()
+        # Use model's extent if available
+        if hasattr(velocity_model, 'x_extent') and hasattr(velocity_model, 'z_extent'):
+            extent = [
+                velocity_model.x_extent[0],
+                velocity_model.x_extent[1],
+                velocity_model.z_extent[1],
+                velocity_model.z_extent[0],
+            ]
+        else:
+            extent = [
+                x_positions[0],
+                x_positions[-1],
+                z_positions[-1],
+                z_positions[0],
+            ]
+    else:
+        # For backward compatibility with numpy arrays
+        velocity_array = velocity_model
+        extent = [
+            x_positions[0],
+            x_positions[-1],
+            z_positions[-1],
+            z_positions[0],
+        ]
+
     # Subplots
     fig, (ax1, ax2) = plt.subplots(
-        nrows=1,
-        ncols=2,
-        figsize=(12, 5),
-        dpi=150,
-        gridspec_kw={
-            # 'height_ratios': [1, 2],
-            'hspace': 0.4
-        },
-        constrained_layout=False
+        1, 2, figsize=(12, 6), gridspec_kw={"width_ratios": [1, 1.5]}
     )
 
-    fig.suptitle("OpenFWI Velocity Model and Simulation")
-
+    # Plot velocity model
     im1 = ax1.imshow(
-        velocity_model,
-        extent=(x_positions[0], x_positions[-1], z_positions[-1], z_positions[0]),
-        aspect='auto',
-        cmap='viridis'
+        velocity_array,
+        extent=extent,
+        aspect="auto",
+        cmap="viridis",
     )
-    cbar = fig.colorbar(im1, ax=ax1, label="Velocity (m/s)")
-    ax1.set_xlabel("X (m)")
-    ax1.set_ylabel("Z (m)")
-    ax1.set_title("Velocity Model")
+    ax1.set_xlabel("Distance (m)")
+    ax1.set_ylabel("Depth (m)")
+    ax1.set_title(f"Velocity Model {model_index}")
+    fig.colorbar(im1, ax=ax1, label="Velocity (m/s)")
 
-    extent = (
-        x_positions[0],
-        x_positions[-1],
-        time_axis[-1],
-        time_axis[0],
-    )
-
+    # Plot shot gather
     im2 = ax2.imshow(
         receiver_traces_shot1,
-        cmap='gray',
-        aspect='auto',
-        extent=extent,
-        vmin=-0.5,
-        vmax=0.5,
+        extent=[
+            receiver_indices[0],
+            receiver_indices[-1],
+            time_axis[-1],
+            time_axis[0],
+        ],
+        aspect="auto",
+        cmap="seismic",
     )
-
-    ax2.set_title("Seismogram")
-    ax2.set_xlabel("Receiver position (m)")
+    ax2.set_xlabel("Receiver Index")
     ax2.set_ylabel("Time (s)")
+    ax2.set_title("Shot Gather")
+    fig.colorbar(im2, ax=ax2, label="Amplitude")
 
+    # Save figure
     figure_path = output_dir / f"openfwi_simulation_model_{model_index:04d}.png"
     fig.savefig(figure_path, dpi=150)
 
@@ -368,228 +446,179 @@ def animate_openfwi_wavefields(
     fps: int = 20,
     velocity_alpha: float = 0.5,
     wavefield_alpha: Optional[float] = None,
-) -> List[Path]:
+) -> Optional[animation.Animation]:
     """
-    Create animated visualizations of the simulated wavefields.
+    Create an animation of the wavefield propagation.
 
     Parameters
     ----------
     results:
         Dictionary produced by :func:`run_openfwi_simulation`.
     output_dir:
-        Directory where the animations should be saved.
+        Directory where the animation file should be written.
     fps:
-        Frame rate (frames per second) for the generated GIF.
+        Frames per second for the animation.
     velocity_alpha:
-        Opacity applied to the velocity model that is plotted beneath each
-        wavefield snapshot.
+        Transparency of the velocity model overlay (0.0 to 1.0).
     wavefield_alpha:
-        Opacity applied to the wavefield. When ``None``, an opacity is derived
-        automatically so the velocity background remains visible.
+        Transparency of the wavefield (0.0 to 1.0). If None, no transparency
+        is applied.
+
+    Returns
+    -------
+    matplotlib.animation.Animation or None
+        The animation object if wavefields are available, otherwise None.
     """
-    # Output directory
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Parameters
-    model_index = int(results["model_index"])
+    # Check if wavefields are available
+    shot_label = "shot"
+    wavefield_key = f"wavefield_snapshots_{shot_label}"
+    wavefields = results.get(wavefield_key)
+    if wavefields is None:
+        console.log("[red]No wavefields available for animation.[/]")
+        return None
+    # end if
+
+    # Get results
+    velocity_model = results["velocity_model"]
     x_positions = results["x_positions"]
     z_positions = results["z_positions"]
-    time_axis = results["time_axis"]
-    time_step = float(results["time_step"])
+    model_index = int(results["model_index"])
     snapshot_stride = int(results["snapshot_stride"])
-    velocity_model = results["velocity_model"]
-    receiver_x_positions = results.get("receiver_x_positions")
+    time_step = float(results["time_step"])
 
-    animations: List[Path] = []
-
-    # Snapshot is a list of 500x500 np.array
-    try:
-        snapshots = results["wavefield_snapshots_shot"]
-    except KeyError:
-        raise RuntimeError(f"Wavefield snapshot data not found in results.")
-    # end try
-
-    # Alpha
-    if wavefield_alpha is None:
-        wavefield_alpha = max(0.2, 1.0 - float(np.clip(velocity_alpha, 0.0, 1.0)))
+    # Get velocity model array (handle both VelocityModel objects and numpy arrays)
+    if hasattr(velocity_model, 'as_numpy'):
+        velocity_array = velocity_model.as_numpy()
+        # Use model's extent if available
+        if hasattr(velocity_model, 'x_extent') and hasattr(velocity_model, 'z_extent'):
+            extent = [
+                velocity_model.x_extent[0],
+                velocity_model.x_extent[1],
+                velocity_model.z_extent[1],
+                velocity_model.z_extent[0],
+            ]
+        else:
+            extent = [
+                x_positions[0],
+                x_positions[-1],
+                z_positions[-1],
+                z_positions[0],
+            ]
     else:
-        wavefield_alpha = float(np.clip(wavefield_alpha, 0.0, 1.0))
-    # end if
+        # For backward compatibility with numpy arrays
+        velocity_array = velocity_model
+        extent = [
+            x_positions[0],
+            x_positions[-1],
+            z_positions[-1],
+            z_positions[0],
+        ]
 
-    times = np.arange(len(snapshots)) * time_step * snapshot_stride
-    amplitude = max(np.max(np.abs(snapshot)) for snapshot in snapshots)
-    if amplitude == 0:
-        amplitude = 1.0
-    # end if
-    norm = Normalize(vmin=-amplitude, vmax=amplitude)
+    # Calculate time for each frame
+    times = np.arange(len(wavefields)) * snapshot_stride * time_step
 
-    # Subplot
-    fig, (ax, ax_receivers) = plt.subplots(
-        ncols=2,
-        figsize=(12, 4),
-        dpi=150,
-        gridspec_kw={"width_ratios": [2, 2]},
-    )
-
-    extent = [
-        x_positions[0],
-        x_positions[-1],
-        z_positions[-1],
-        z_positions[0],
-    ]
-
-    if velocity_alpha > 0:
-        ax.imshow(
-            velocity_model,
-            extent=extent,
-            aspect="auto",
-            cmap="viridis",
-            alpha=velocity_alpha,
-            zorder=0,
-        )
-    # end if
-
-    image = ax.imshow(
-        snapshots[0],
-        extent=extent,
-        aspect="auto",
-        cmap="seismic",
-        norm=norm,
-        alpha=wavefield_alpha,
-        zorder=1,
-    )
-
-    ax.set_xlabel("X (m)")
-    ax.set_ylabel("Z (m)")
-    title = ax.set_title(f"Wavefield - t={times[0]:.3f}s")
-    fig.colorbar(image, ax=ax, label="Pressure")
-
-    receiver_traces_key = f"receiver_traces_shot"
-    receiver_traces = results.get(receiver_traces_key)
-    if receiver_traces is None and shot_label == "shot1":
-        receiver_traces = results.get("receiver_traces_shot")
-    # end if
-
-    seismo_image = None
-    partial_traces = None
-    receiver_extent = None
-    if (
-        receiver_traces is not None
-        and receiver_x_positions is not None
-        and len(receiver_traces) > 0
-        and len(receiver_x_positions) > 0
-    ):
-        receiver_traces = np.asarray(receiver_traces)
-        seismo_vlim = np.max(np.abs(receiver_traces))
-        if seismo_vlim == 0:
-            seismo_vlim = 1.0
-        # end if
-        partial_traces = np.ma.masked_all(receiver_traces.shape, dtype=float)
-        receiver_extent = (
-            receiver_x_positions[0],
-            receiver_x_positions[-1],
-            time_axis[-1],
-            time_axis[0],
-        )
-        ax_receivers.set_facecolor("white")
-        seismo_image = ax_receivers.imshow(
-            partial_traces,
-            extent=receiver_extent,
-            aspect="auto",
-            cmap="gray",
-            vmin=-seismo_vlim,
-            vmax=seismo_vlim,
-            interpolation="nearest",
-        )
-        ax_receivers.set_title("Receiver Gather")
-        ax_receivers.set_xlabel("Receiver position (m)")
-        ax_receivers.set_ylabel("Time (s)")
-        fig.colorbar(seismo_image, ax=ax_receivers, label="Amplitude")
-        ax_receivers.set_ylim(time_axis[-1], time_axis[0])
-    else:
-        ax_receivers.axis("off")
-        ax_receivers.text(
-            0.5,
-            0.5,
-            "No receiver data available",
-            ha="center",
-            va="center",
-            transform=ax_receivers.transAxes,
-        )
-    # end if
-
-    def _update(frame_index: int) -> List[Any]:
-        image.set_data(snapshots[frame_index])
-        title.set_text(
-            f"Wavefield - t={times[frame_index]:.3f}s"
-        )
-        artists: List[Any] = [image, title]
-        if seismo_image is not None and partial_traces is not None:
-            current_time = times[frame_index]
-            if frame_index == 0 and np.isclose(current_time, 0.0):
-                sample_count = 0
-            else:
-                sample_index = int(
-                    round(current_time / time_step)
+    # Create a temporary directory to store the frames
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_dir_path = Path(tmp_dir)
+        
+        # Create progress bar for generating frames
+        with Progress(
+            TextColumn("[bold blue]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TimeRemainingColumn(),
+        ) as progress:
+            frame_task = progress.add_task("[cyan]Generating frames...", total=len(wavefields))
+            
+            # Generate frames on-the-fly
+            for frame_idx, wavefield in enumerate(wavefields):
+                # Create figure and axes for this frame
+                fig, ax = plt.subplots(figsize=(10, 8))
+                
+                # Plot velocity model
+                vel_im = ax.imshow(
+                    velocity_array,
+                    extent=extent,
+                    aspect="auto",
+                    cmap="viridis",
+                    alpha=velocity_alpha,
                 )
-                sample_count = min(
-                    sample_index + 1,
-                    receiver_traces.shape[0],
+                fig.colorbar(vel_im, ax=ax, label="Velocity (m/s)")
+                
+                # Plot wavefield
+                vmin, vmax = np.min(wavefields), np.max(wavefields)
+                abs_max = max(abs(vmin), abs(vmax))
+                norm = Normalize(vmin=-abs_max, vmax=abs_max)
+                
+                image = ax.imshow(
+                    wavefield,
+                    extent=extent,
+                    aspect="auto",
+                    cmap="seismic",
+                    norm=norm,
+                    alpha=wavefield_alpha,
                 )
-            # end if
-            partial_traces.mask[...] = True
-            if sample_count > 0:
-                partial_traces.data[-sample_count:, :] = receiver_traces[
-                    :sample_count, :
-                ]
-                partial_traces.mask[-sample_count:, :] = False
-            # end if
-            seismo_image.set_data(partial_traces)
-            artists.append(seismo_image)
-        # end if
-        return artists
-    # end def _update
-
-    # Animation
-    anim = animation.FuncAnimation(
-        fig,
-        _update,
-        frames=len(snapshots),
-        interval=1000 / fps,
-        blit=False,
-    )
-
-    # Save GIF animation
-    gif_path = output_dir / f"openfwi_model_{model_index:04d}.gif"
-    anim.save(gif_path, writer=animation.PillowWriter(fps=fps))
-    animations.append(gif_path)
-    console.print(f"[cyan]Saved animation to:[/cyan] {gif_path}")
-
-    plt.show()
-    plt.close(fig)
-
-    return animations
+                
+                # Add labels and title
+                ax.set_xlabel("Distance (m)")
+                ax.set_ylabel("Depth (m)")
+                ax.set_title(f"Wavefield - t={times[frame_idx]:.3f}s")
+                fig.colorbar(image, ax=ax, label="Pressure")
+                
+                # Save the frame
+                frame_path = tmp_dir_path / f"frame_{frame_idx:04d}.png"
+                fig.savefig(frame_path)
+                plt.close(fig)
+                
+                # Update progress
+                progress.update(frame_task, advance=1)
+        
+        # Create the output path for the animation
+        output_path = output_dir / f"openfwi_shot{shot_label}_model_{model_index:04d}.gif"
+        
+        # Create animation from the saved frames
+        console.log("[cyan]Creating animation from frames...[/]")
+        
+        # Use imageio or PIL to create the GIF
+        try:
+            import imageio
+            
+            # Get all frame files sorted by name
+            frame_files = sorted(list(tmp_dir_path.glob("frame_*.png")))
+            
+            # Read all frames
+            frames = [imageio.imread(str(frame)) for frame in frame_files]
+            
+            # Save as GIF
+            imageio.mimsave(str(output_path), frames, fps=fps)
+            
+        except ImportError:
+            # Fallback to using matplotlib's animation
+            from matplotlib.animation import FuncAnimation
+            
+            fig, ax = plt.subplots(figsize=(10, 8))
+            
+            # Function to update the figure for each frame
+            def update(frame_idx):
+                ax.clear()
+                img = plt.imread(tmp_dir_path / f"frame_{frame_idx:04d}.png")
+                ax.imshow(img)
+                ax.axis('off')
+                return [ax]
+            
+            # Create the animation
+            anim = FuncAnimation(
+                fig, update, frames=len(wavefields), interval=1000 / fps, blit=True
+            )
+            
+            # Save the animation
+            anim.save(str(output_path), writer='pillow', fps=fps)
+            plt.close(fig)
+    
+    console.log(f"[cyan]Saved animation to:[/cyan] {output_path}")
+    
+    return None  # We don't return the animation object since we're creating it on-the-fly
 # end def animate_openfwi_wavefields
-
-
-def _strip_absorbing_boundary(
-    pressure_field: np.ndarray, boundary_cell_count: int
-) -> np.ndarray:
-    """Remove the absorbing boundary padding from a wavefield snapshot."""
-    if boundary_cell_count <= 0:
-        return pressure_field.copy()
-    # end if
-
-    interior = pressure_field[
-        boundary_cell_count:-boundary_cell_count or None,
-        boundary_cell_count:-boundary_cell_count or None,
-    ]
-    return interior.copy()
-# end def _strip_absorbing_boundary
-
-__all__ = [
-    "run_openfwi_simulation",
-    "plot_openfwi_results",
-    "animate_openfwi_wavefields",
-]

@@ -275,12 +275,18 @@ def wave(
     is_flag=True,
     help="Skip interactive visualisation (still saves the figure).",
 )
+@click.option(
+    "--animate/--no-animate",
+    default=False,
+    help="Generate animation of the wavefield propagation.",
+)
 def openfwi(
     models_path: Path,
     model_index: int,
     config_path: Path,
     output_dir: Path,
     no_visualization: bool,
+    animate: bool,
 ) -> None:
     """
     Run OpenFWI simulation and visualise/save the results.
@@ -292,6 +298,7 @@ def openfwi(
         output_dir: Directory where static figures and animations are saved.
         no_visualization: Whether to disable interactive rendering while still
             writing files to disk.
+        animate: Whether to generate an animation of the wavefield propagation.
     """
     try:
         console.log("[green]Running OpenFWI simulation...[/green]")
@@ -305,6 +312,7 @@ def openfwi(
     # end try
 
     # Static figure summarizing the simulation; optionally shown interactively.
+    figure_path = None
     if not no_visualization:
         console.log("[green]Plotting simulation output[/green]")
         figure_path = plot_openfwi_results(
@@ -314,9 +322,10 @@ def openfwi(
     # end if
 
     # Sequence of animations illustrating wavefield evolution for each survey.
-    if not no_visualization:
+    animation_path = None
+    if animate and not no_visualization:
         console.log("[green]Animating OpenFWI simulation...[/green]")
-        animation_paths = animate_openfwi_wavefields(
+        animation_path = animate_openfwi_wavefields(
             results=results,
             output_dir=output_dir
         )
@@ -329,13 +338,10 @@ def openfwi(
     info_table.add_row("Models file", str(models_path))
     info_table.add_row("Model index", str(model_index))
     info_table.add_row("Configuration", str(config_path))
-    info_table.add_row("Figure path", str(figure_path))
-    if animation_paths:
-        info_table.add_row(
-            "Animations",
-            "\n".join(str(path) for path in animation_paths),
-        )
-    # end if animation_paths
+    if figure_path:
+        info_table.add_row("Figure path", str(figure_path))
+    if animation_path:
+        info_table.add_row("Animation", str(animation_path))
     console.print(info_table)
 # end def openfwi
 
