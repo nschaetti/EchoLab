@@ -315,7 +315,8 @@ def _style_colorbar(cbar: plt.Axes, plot_cfg: Dict[str, Any], label: str) -> Non
 
 
 def _annotate_source(
-    ax: plt.Axes, plot_cfg: Dict[str, Any], source_cfg: Dict[str, Any]
+    ax: plt.Axes, plot_cfg: Dict[str, Any], source_cfg: Dict[str, Any], 
+    show_source: bool = True
 ) -> Tuple[List[Line2D], List[str]]:
     """
     Annotate the source position on the plot.
@@ -324,10 +325,14 @@ def _annotate_source(
         ax (plt.Axes): Axes to annotate.
         plot_cfg (Dict[str, Any]): Plot configuration.
         source_cfg (Dict[str, Any]): Source configuration.
+        show_source (bool, optional): Whether to show the source marker. Defaults to True.
 
     Returns:
         Tuple[List[Line2D], List[str]]: Legend handles and labels.
     """
+    if not show_source or source_cfg is None:
+        return [], []
+        
     ix = source_cfg["ix"] - 1  # Convert to 0-based index
     iz = source_cfg["iz"] - 1  # Convert to 0-based index
     dx = ax.get_figure().get_axes()[0].get_images()[0].get_extent()[1] / (ax.get_figure().get_axes()[0].get_images()[0].get_array().shape[1] - 1)
@@ -355,6 +360,8 @@ def _finalize_legend(
 ) -> None:
     """
     Finalize the legend on the plot.
+    
+    Note: Legend display is now disabled as per requirements.
 
     Args:
         ax (plt.Axes): Axes to add the legend to.
@@ -362,13 +369,8 @@ def _finalize_legend(
         labels (list): Legend labels.
         plot_cfg (Dict[str, Any]): Plot configuration.
     """
-    if handles and labels:
-        ax.legend(
-            handles,
-            labels,
-            loc=plot_cfg["legend_loc"],
-            fontsize=plot_cfg["legend_fontsize"],
-        )
+    # Legend display is disabled
+    pass
 # end def _finalize_legend
 
 
@@ -475,16 +477,18 @@ def initialise_velocity(config: ConfigDict, grid_shape: Tuple[int, int]) -> np.n
 # end def initialise_velocity
 
 
-def plot_velocity(c: np.ndarray, config: ConfigDict) -> None:
+def plot_velocity(c: np.ndarray, config: ConfigDict, show_source: bool = False) -> None:
     """
     Plot the velocity model.
 
     Args:
         c (np.ndarray): Velocity model.
         config (ConfigDict): Configuration dictionary.
+        show_source (bool, optional): Whether to show the source marker. 
+            Defaults to False as source is now a parameter of the simulation, not part of the velocity model.
     """
     plot_cfg = _load_plot_section(config)
-    source_cfg = _load_source_section(config)
+    source_cfg = _load_source_section(config) if show_source else None
     
     domain_x = (config["nx"] - 1) * config["dx"]
     domain_z = (config["nz"] - 1) * config["dz"]
@@ -509,12 +513,113 @@ def plot_velocity(c: np.ndarray, config: ConfigDict) -> None:
     if plot_cfg["grid_visible"]:
         ax.grid(color=plot_cfg["tick_color"], alpha=0.3)
     
-    legend_handles, legend_labels = _annotate_source(ax, plot_cfg, source_cfg)
+    legend_handles, legend_labels = _annotate_source(ax, plot_cfg, source_cfg, show_source)
     _finalize_legend(ax, legend_handles, legend_labels, plot_cfg)
     
     plt.tight_layout()
     plt.show()
 # end def plot_velocity
+
+
+def plot_multiple_velocity_models(
+    velocity_models: List[np.ndarray], 
+    configs: List[ConfigDict], 
+    model_params: List[Dict] = None,
+    show_source: bool = False,
+    figwidth: Optional[float] = None,
+    figheight: Optional[float] = None
+) -> None:
+    """
+    Plot multiple velocity models in a grid of subfigures.
+
+    Args:
+        velocity_models (List[np.ndarray]): List of velocity models to display.
+        configs (List[ConfigDict]): List of configuration dictionaries for each model.
+        model_params (List[Dict], optional): List of parameter dictionaries for each model.
+        show_source (bool, optional): Whether to show the source marker.
+            Defaults to False as source is now a parameter of the simulation, not part of the velocity model.
+        figwidth (float, optional): Width of the figure in inches. If None, calculated automatically.
+        figheight (float, optional): Height of the figure in inches. If None, calculated automatically.
+    """
+    n_models = len(velocity_models)
+    
+    # Calculate optimal grid layout with n_cols ≈ n_rows * 1.5
+    n_cols = max(1, int(np.ceil(np.sqrt(n_models * 1.5))))
+    n_rows = int(np.ceil(n_models / n_cols))
+    
+    # Create figure and axes
+    if figwidth is not None and figheight is not None:
+        # Use provided figure size
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(figwidth, figheight))
+    else:
+        # Calculate default figure size
+        default_width = n_cols * 6
+        default_height = n_rows * 4
+        # Use provided dimension if available, otherwise use default
+        width = figwidth if figwidth is not None else default_width
+        height = figheight if figheight is not None else default_height
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(width, height))
+    
+    # Handle single subplot case
+    if n_models == 1:
+        axes = np.array([axes])
+    
+    # Flatten axes array for easy iteration
+    axes = np.array(axes).flatten()
+    
+    # Plot each velocity model
+    for i, (velocity_model, config) in enumerate(zip(velocity_models, configs)):
+        if i >= n_models:
+            break
+            
+        ax = axes[i]
+        plot_cfg = _load_plot_section(config)
+        source_cfg = _load_source_section(config) if show_source else None
+        
+        domain_x = (config["nx"] - 1) * config["dx"]
+        domain_z = (config["nz"] - 1) * config["dz"]
+        extent = [0.0, domain_x, domain_z, 0.0]
+        
+        img = ax.imshow(
+            velocity_model,
+            extent=extent,
+            origin="upper",
+            cmap="viridis",
+            aspect="auto",
+        )
+        
+        # Add colorbar to each subplot
+        if plot_cfg["show_colorbar"]:
+            cbar = plt.colorbar(img, ax=ax)
+            _style_colorbar(cbar, plot_cfg, "Velocity (m/s)")
+        
+        # Set title for each subplot
+        title = f"Model {i}"
+        if "title" in plot_cfg:
+            title = f"{plot_cfg['title']} - Model {i}"
+        # end if
+        ax.set_title(title, fontsize=plot_cfg.get("title_fontsize", 12))
+        
+        # Style axes
+        ax.set_xlabel("Distance (m)", fontsize=plot_cfg.get("label_fontsize", 10))
+        ax.set_ylabel("Depth (m)", fontsize=plot_cfg.get("label_fontsize", 10))
+        
+        if plot_cfg["grid_visible"]:
+            ax.grid(color=plot_cfg.get("tick_color", "gray"), alpha=0.3)
+        # end if
+        
+        # Add source annotation if requested
+        if show_source:
+            legend_handles, legend_labels = _annotate_source(ax, plot_cfg, source_cfg, show_source)
+            _finalize_legend(ax, legend_handles, legend_labels, plot_cfg)
+        # end if
+    # Hide unused subplots
+    for i in range(n_models, len(axes)):
+        axes[i].axis('off')
+    
+    plt.tight_layout()
+    plt.show()
+# end def plot_multiple_velocity_models
 
 
 def plot_frame(
@@ -576,7 +681,7 @@ def plot_frame(
             if plot_cfg["grid_visible"]:
                 ax.grid(color=plot_cfg["tick_color"], alpha=0.3)
             
-            legend_handles, legend_labels = _annotate_source(ax, plot_cfg, source_cfg)
+            legend_handles, legend_labels = _annotate_source(ax, plot_cfg, source_cfg, show_source=True)
             _finalize_legend(ax, legend_handles, legend_labels, plot_cfg)
             
             plt.tight_layout()

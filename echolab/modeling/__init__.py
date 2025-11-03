@@ -23,6 +23,12 @@ from .data_augmentation import (
 )
 from .validation import entropy_score, is_valid_model
 from .wavelets import ricker
+from .velocity_map import (
+    Dimensionality,
+    VelocityMap,
+    save_velocity_maps,
+    load_velocity_maps,
+)
 
 # Import acoustic field simulation classes
 from .acoustic_field import (
@@ -66,6 +72,12 @@ __all__ = [
     "perlin_threshold_model",
     "generate_perlin_noise_2d",
     "save_and_plot",
+    
+    # Velocity maps
+    "Dimensionality",
+    "VelocityMap",
+    "save_velocity_maps",
+    "load_velocity_maps",
     
     # Data augmentation
     "RandomRotation",

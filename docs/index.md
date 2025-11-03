@@ -13,6 +13,7 @@ Documentation related to the implementation details, design patterns, and class 
 Documentation for command-line interface tools provided by EchoLab.
 
 - [Wavelet CLI Commands Documentation](cli/WAVELET_CLI_DOCUMENTATION.md) - Documentation for wavelet-related CLI commands.
+- [Velocity Model CLI Commands Documentation](cli/VELOCITY_MODEL_CLI_DOCUMENTATION.md) - Documentation for velocity model visualization and generation commands.
 
 ### [Theory](theory/)
 Documentation on the theoretical aspects of seismic modeling, physics, simulation, and finite differences.

@@ -10,7 +10,7 @@ maintainers.
 # Imports
 from __future__ import annotations
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 import click
 import numpy as np
 import yaml
@@ -18,8 +18,11 @@ from rich.console import Console
 from rich.table import Table
 from echolab.simulators.openanfwi.wave import (
     plot_velocity,
+    plot_multiple_velocity_models,
     prepare_wave_simulation,
     run_simulation,
+    DEFAULT_PLOT,
+    DEFAULT_SOURCE,
 )
 from echolab.simulators.openfwi.simulate_model import (
     animate_openfwi_wavefields,
@@ -27,6 +30,8 @@ from echolab.simulators.openfwi.simulate_model import (
     run_openfwi_simulation,
 )
 from echolab.modeling import generate_models as synthesize_velocity_models
+from echolab.modeling.velocity_map import Dimensionality, save_velocity_maps
+from echolab.cli_commands.generate_models_cli import generate_models
 from echolab.cli_wavelets import wavelets
 
 # Shared rich console instance to keep styling consistent across commands.
@@ -139,23 +144,28 @@ def generate_stratified_velocity_model(
 # end def generate_stratified_velocity_model
 
 
-def _load_generation_config(config_path: Path) -> Dict[str, Any]:
+def _load_generation_config(
+        config_path: Path
+) -> 'ModelGenerationConfig':
     """
     Load and validate the YAML configuration used for model generation.
+
+    Args:
+        config_path: Path to the YAML configuration file.
+        
+    Returns:
+        ModelGenerationConfig: A validated configuration object.
+        
+    Raises:
+        FileNotFoundError: If the configuration file doesn't exist.
+        ValueError: If the configuration is invalid or missing required parameters.
     """
-    config_path = config_path.expanduser()
-    if not config_path.exists():
-        raise FileNotFoundError(f"Configuration file '{config_path}' not found.")
-    # end if
-
-    with config_path.open("r", encoding="utf-8") as handle:
-        data = yaml.safe_load(handle)
-    # end with
-
-    if not isinstance(data, dict):
-        raise ValueError("Model generation configuration must be a mapping.")
-    # end if
-    return data
+    from echolab.modeling.model_generation_config import ModelGenerationConfig
+    try:
+        return ModelGenerationConfig.from_yaml(config_path)
+    except (FileNotFoundError, ValueError) as exc:
+        raise exc
+    # end try
 # end def _load_generation_config
 
 
@@ -381,185 +391,44 @@ def openfwi(
     is_flag=True,
     help="Display validation messages for discarded models.",
 )
+@click.option(
+    "--dim",
+    type=click.Choice(["1D", "2D", "3D"]),
+    default="2D",
+    show_default=True,
+    help="Dimensionality of the velocity models to generate.",
+)
 def generate_models_cli(
     config_path: Path,
     output_path: Path,
     seed: Optional[int],
     overwrite: bool,
     verbose: bool,
+    dim: str,
 ) -> None:
     """
     Generate a library of velocity models using the shared echolab synthesiser.
+    
+    This function delegates to the implementation in echolab.cli_commands.generate_models_cli.
+    
+    Args:
+        config_path: Path to the YAML configuration file
+        output_path: Path to save the generated models
+        seed: Optional random seed to override the one in configuration
+        overwrite: Whether to overwrite existing output file
+        verbose: Whether to display validation messages for discarded models
+        dim: Dimensionality of the velocity models to generate (1D, 2D, 3D)
     """
     try:
-        config = _load_generation_config(config_path)
-        output_path = Path(output_path)
-        if output_path.exists() and not overwrite:
-            raise FileExistsError(
-                f"Output file '{output_path}' already exists. Use --overwrite to replace it."
-            )
-        # end if
-
-        model_params_section = config.get("model_params", {})
-        if model_params_section is None:
-            model_params_section = {}
-        if not isinstance(model_params_section, dict):
-            raise ValueError("'model_params' must be a mapping.")
-        global_model_settings: Dict[str, Any] = {
-            key: value
-            for key, value in model_params_section.items()
-            if not isinstance(value, dict)
-        }
-        per_model_settings: Dict[str, Dict[str, Any]] = {
-            key: value
-            for key, value in model_params_section.items()
-            if isinstance(value, dict)
-        }
-
-        def _extract_numeric(
-            name: str,
-            converter,
-            *,
-            fallback: Any = None,
-            required: bool = True,
-        ) -> Any:
-            if name in config:
-                value = config[name]
-            elif name in global_model_settings:
-                value = global_model_settings[name]
-            elif fallback is not None:
-                value = fallback
-            elif not required:
-                return None
-            else:
-                raise ValueError(f"Configuration must define '{name}'.")
-            try:
-                return converter(value)
-            except (TypeError, ValueError) as exc:
-                raise ValueError(f"Configuration field '{name}' has an invalid value.") from exc
-            # end try
-        # end _extract_numeric
-
-        nx = _extract_numeric("nx", int)
-        nz = _extract_numeric("nz", int)
-        dx = _extract_numeric("dx", float)
-        dz = _extract_numeric("dz", float)
-        n_models = _extract_numeric("n_models", int)
-
-        if nx <= 0 or nz <= 0 or dx <= 0 or dz <= 0:
-            raise ValueError("Grid dimensions (nx, nz) and spacing (dx, dz) must be positive.")
-        if n_models <= 0:
-            raise ValueError("Configuration 'n_models' must be a positive integer.")
-
-        validation_section = config.get("validation", {})
-        if validation_section is None:
-            validation_section = {}
-        if not isinstance(validation_section, dict):
-            raise ValueError("'validation' must be a mapping when provided.")
-
-        model_blur_sigma = float(
-            config.get(
-                "model_blur_sigma",
-                global_model_settings.get("sigma", 0.0),
-            )
+        # Call the implementation in the dedicated module
+        generate_models(
+            config_path=config_path,
+            output_path=output_path,
+            seed=seed,
+            overwrite=overwrite,
+            verbose=verbose,
+            dim=dim
         )
-        if model_blur_sigma == 0.0:
-            for params in per_model_settings.values():
-                if isinstance(params, dict) and "sigma" in params:
-                    try:
-                        model_blur_sigma = float(params["sigma"])
-                        break
-                    except (TypeError, ValueError):
-                        continue
-            # end for
-        min_velocity = float(validation_section.get("min_v", config.get("min_velocity", 1000.0)))
-        max_velocity = float(validation_section.get("max_v", config.get("max_velocity", 5000.0)))
-        unique_thresh = float(validation_section.get("unique_thresh", config.get("unique_thresh", 0.99)))
-        entropy_thresh = float(validation_section.get("entropy_thresh", config.get("entropy_thresh", 1.0)))
-        zero_thresh = float(validation_section.get("zero_thresh", config.get("zero_thresh", 0.01)))
-
-        model_types = list(config.get("model_types", []))
-        if not model_types:
-            raise ValueError("Configuration must provide at least one entry in 'model_types'.")
-        model_probs_map = config.get("model_probs") or config.get("model_probabilities") or {}
-        if not isinstance(model_probs_map, dict):
-            raise ValueError("'model_probs' or 'model_probabilities' must map model names to probability weights.")
-        model_probs = _coerce_probability_map(model_types, model_probs_map, "model", normalise=True)
-
-        sanitised_model_params: Dict[str, Dict[str, Any]] = {}
-        for name in model_types:
-            params = per_model_settings.get(name, {})
-            if params is None:
-                params = {}
-            if not isinstance(params, dict):
-                raise ValueError(f"Parameters for model '{name}' must be a mapping.")
-            params_copy = dict(params)
-            params_copy.pop("sigma", None)
-            sanitised_model_params[name] = params_copy
-
-        transform_types = list(config.get("transform_types") or config.get("transforms") or [])
-        transform_probs_map = config.get("transform_probs") or config.get("transform_probabilities") or {}
-        if transform_types and not isinstance(transform_probs_map, dict):
-            raise ValueError("'transform_probs' or 'transform_probabilities' must map transform names to probabilities.")
-        transform_probs: Dict[str, float] = {}
-        for name in transform_types:
-            try:
-                probability = float(transform_probs_map.get(name, 0.0))
-            except (TypeError, ValueError) as exc:
-                raise ValueError(f"Transform probability for '{name}' must be numeric.") from exc
-            if probability < 0.0 or probability > 1.0:
-                raise ValueError(f"Transform probability for '{name}' must lie within [0, 1].")
-            transform_probs[name] = probability
-
-        transform_params = config.get("transform_params", {})
-        if transform_params is None:
-            transform_params = {}
-        if not isinstance(transform_params, dict):
-            raise ValueError("'transform_params' must be a mapping of transform names to parameter dictionaries.")
-
-        effective_seed = seed if seed is not None else config.get("seed")
-        rng = np.random.default_rng(effective_seed)
-        verbose_flag = verbose or bool(config.get("verbose", False))
-
-        models = synthesize_velocity_models(
-            rng=rng,
-            nx=nx,
-            nz=nz,
-            dx=dx,
-            dz=dz,
-            model_types=model_types,
-            model_probs=model_probs,
-            model_params=sanitised_model_params,
-            model_blur_sigma=model_blur_sigma,
-            transform_types=transform_types,
-            transform_probs=transform_probs,
-            transform_params={name: transform_params.get(name, {}) for name in transform_types},
-            n_models=n_models,
-            min_v=min_velocity,
-            max_v=max_velocity,
-            unique_thresh=unique_thresh,
-            entropy_thresh=entropy_thresh,
-            zero_thresh=zero_thresh,
-            verbose=verbose_flag,
-        )
-
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        np.save(output_path, models.astype(np.float32))
-
-        info_table = Table(title="Synthetic Velocity Models")
-        info_table.add_column("Setting", style="cyan", no_wrap=True)
-        info_table.add_column("Value", style="magenta")
-        info_table.add_row("Configuration", str(config_path))
-        info_table.add_row("Output file", str(output_path))
-        info_table.add_row("Seed", str(effective_seed) if effective_seed is not None else "None")
-        info_table.add_row("Model count", str(models.shape[0]))
-        info_table.add_row("Grid size", f"{nz} x {nx}")
-        info_table.add_row("Model types", ", ".join(model_types))
-        info_table.add_row(
-            "Transforms",
-            ", ".join(transform_types) if transform_types else "None",
-        )
-        console.print(info_table)
     except (FileNotFoundError, FileExistsError, ValueError, yaml.YAMLError) as exc:
         raise ClickBaseException(exc) from exc
     # end try
@@ -657,6 +526,227 @@ def velmap_2d(
         raise ClickBaseException(exc) from exc
     # end try
 # end def velmap_2d
+
+
+@cli.command(
+    name="visualize-model",
+    help="Visualize a velocity model from a NumPy .npy file.",
+)
+@click.option(
+    "--file",
+    "model_path",
+    required=True,
+    type=click.Path(path_type=Path, exists=True, dir_okay=False),
+    help="Path to the NumPy .npy file containing velocity models.",
+)
+@click.argument(
+    "model_indices",
+    nargs=-1,
+    type=int,
+    required=True,
+)
+@click.option(
+    "--figwidth",
+    type=float,
+    default=None,
+    help="Width of the figure in inches. If not specified, calculated automatically.",
+)
+@click.option(
+    "--figheight",
+    type=float,
+    default=None,
+    help="Height of the figure in inches. If not specified, calculated automatically.",
+)
+@click.option(
+    "--title",
+    type=str,
+    default="Velocity Model Visualization",
+    show_default=True,
+    help="Title for the visualization.",
+)
+def visualize_model(
+    model_path: Path,
+    model_indices: List[int],
+    figwidth: Optional[float],
+    figheight: Optional[float],
+    title: str,
+) -> None:
+    """
+    Visualize one or more velocity models from a NumPy .npy file.
+    
+    Usage:
+        echolab visualize-model --file <model_file.npy> [model_indices...] [options]
+    
+    Args:
+        model_path: Path to the NumPy .npy file containing velocity models.
+        model_indices: List of indices of the velocity models to visualize (0-based).
+        figwidth: Width of the figure in inches. If None, calculated automatically.
+        figheight: Height of the figure in inches. If None, calculated automatically.
+        title: Title for the visualization.
+    """
+    try:
+        # Load the velocity models
+        console.print(f"[green]Loading velocity models from[/green] {model_path}")
+        try:
+            # First try to load as a list of VelocityModel objects
+            # Use the pydantic-based implementation
+            from echolab.modeling.velocity_models import load_velocity_models as load_velocity_model_objects
+            from echolab.modeling.velocity_models import VelocityModel, VelocityModel2D
+            try:
+                velocity_model_objects = load_velocity_model_objects(model_path)
+                is_velocity_model = True
+                is_velocity_map = False
+            except Exception as e:
+                console.print(f"[yellow]Not a VelocityModel file, trying VelocityMap...[/yellow]")
+                is_velocity_model = False
+                
+                # Try to load as a list of VelocityMap objects
+                from echolab.modeling.velocity_map import load_velocity_maps, VelocityMap
+                try:
+                    velocity_maps = load_velocity_maps(model_path)
+                    is_velocity_map = True
+                except:
+                    # If that fails, try loading as a NumPy array
+                    velocity_models_array = np.load(model_path, allow_pickle=True)
+                    is_velocity_map = False
+        except Exception as exc:
+            raise ValueError(f"Failed to load velocity models from {model_path}: {exc}")
+        
+        # Lists to store models, configs, and parameters
+        selected_models = []
+        configs = []
+        model_params = []
+        
+        # Process each requested model index
+        for model_index in model_indices:
+            # Handle VelocityModel objects
+            if is_velocity_model:
+                try:
+                    velocity_model_obj = velocity_model_objects[model_index]
+                    velocity_model = velocity_model_obj.as_numpy()
+                    
+                    # Get model parameters
+                    params = {
+                        "dx": velocity_model_obj.grid_spacing[0],
+                        "dz": velocity_model_obj.grid_spacing[-1],
+                    }
+                    
+                    # Add metadata from the VelocityModel
+                    if hasattr(velocity_model_obj, '_metadata') and velocity_model_obj._metadata:
+                        params.update(velocity_model_obj._metadata)
+                    
+                    # Use grid_spacing from the VelocityModel for this specific model
+                    model_dx = params["dx"]
+                    model_dz = params["dz"]
+                except IndexError:
+                    raise ValueError(
+                        f"Model index {model_index} out of bounds. "
+                        f"File contains {len(velocity_model_objects)} models (0-{len(velocity_model_objects)-1})."
+                    )
+            # Handle VelocityMap objects
+            elif is_velocity_map:
+                try:
+                    velocity_map = velocity_maps[model_index]
+                    velocity_model = velocity_map.data
+
+                    # Get model parameters
+                    params = {
+                        "dx": velocity_map.dx,
+                        "dz": velocity_map.dz,
+                    }
+                    # Add any additional parameters from the VelocityMap
+                    for attr in dir(velocity_map):
+                        if not attr.startswith('_') and attr not in ['data', 'dx', 'dz']:
+                            value = getattr(velocity_map, attr)
+                            if not callable(value):
+                                params[attr] = value
+                    
+                    # Use dx and dz from the VelocityMap for this specific model
+                    model_dx = velocity_map.dx
+                    model_dz = velocity_map.dz
+                except IndexError:
+                    raise ValueError(
+                        f"Model index {model_index} out of bounds. "
+                        f"File contains {len(velocity_maps)} models (0-{len(velocity_maps)-1})."
+                    )
+            else:
+                # Handle NumPy arrays
+                if not isinstance(velocity_models_array, np.ndarray):
+                    raise ValueError(f"File {model_path} does not contain a NumPy array.")
+                
+                # Handle both single models and arrays of models
+                if velocity_models_array.ndim == 2:
+                    # Single model
+                    if model_index != 0:
+                        raise ValueError(f"File contains a single model, but index {model_index} was requested.")
+                    velocity_model = velocity_models_array
+                else:
+                    # Array of models
+                    try:
+                        velocity_model = velocity_models_array[model_index]
+                    except IndexError:
+                        raise ValueError(
+                            f"Model index {model_index} out of bounds. "
+                            f"File contains {velocity_models_array.shape[0]} models (0-{velocity_models_array.shape[0]-1})."
+                        )
+                
+                # For NumPy array models, we need to raise an error since dx and dz must be in the model
+                raise ValueError(
+                    f"The model in {model_path} does not contain dx and dz information. "
+                    "Please use VelocityModel or VelocityMap format which includes this information."
+                )
+            
+            # Create a configuration dictionary for this model
+            nz, nx = velocity_model.shape
+            config = {
+                "nx": nx,
+                "nz": nz,
+                "dx": model_dx,
+                "dz": model_dz,
+                "plot": DEFAULT_PLOT.copy(),
+                "source": DEFAULT_SOURCE.copy(),
+            }
+            
+            # Update the plot title
+            config["plot"]["title"] = f"{title} - Model {model_index}"
+            
+            # Add model, config, and parameters to lists
+            selected_models.append(velocity_model)
+            configs.append(config)
+            model_params.append(params)
+        
+        # Display model parameters in the console
+        console.print(f"[green]Visualizing {len(selected_models)} velocity models[/green]")
+        
+        # Print parameters for each model
+        for i, params in enumerate(model_params):
+            console.print(f"[bold blue]Model {i} Parameters:[/bold blue]")
+            table = Table(show_header=True, header_style="bold magenta")
+            table.add_column("Parameter", style="dim")
+            table.add_column("Value")
+            
+            for key, value in params.items():
+                if isinstance(value, (int, float)):
+                    table.add_row(key, f"{value:.4f}")
+                else:
+                    table.add_row(key, str(value))
+            
+            console.print(table)
+            console.print("")
+        
+        # Plot all selected models with their parameters
+        plot_multiple_velocity_models(
+            velocity_models=selected_models,
+            configs=configs,
+            model_params=model_params,
+            show_source=False,
+            figwidth=figwidth,
+            figheight=figheight
+        )
+        
+    except (ValueError, FileNotFoundError, OSError) as exc:
+        raise ClickBaseException(exc) from exc
+# end def visualize_model
 
 
 def main(

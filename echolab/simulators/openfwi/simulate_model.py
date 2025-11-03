@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from matplotlib import animation
 import matplotlib.pyplot as plt
 import numpy as np
@@ -27,19 +27,28 @@ from echolab.modeling import (
     ricker,
     VelocityModel2D
 )
+from echolab.modeling.velocity_models import load_velocity_models, load_velocity_model
 
 
 console = Console()
 
 
 def _load_velocity_models(
-    models_path: Path
+    models_path: Path,
+    default_grid_spacing: Tuple[float, float] = (10.0, 10.0)
 ) -> List[VelocityModel2D]:
     """
-    Load velocity models from a NumPy file and convert to VelocityModel2D objects.
+    Load velocity models from a file.
+
+    This function can load velocity models from:
+    - A pickle file containing a list of VelocityModel objects
+    - A pickle file containing a list of VelocityMap objects
+    - A NumPy file containing velocity data arrays
 
     Args:
-        models_path (Path): Path to the .npy file containing velocity models.
+        models_path (Path): Path to the file containing velocity models.
+        default_grid_spacing (Tuple[float, float]): Default grid spacing (dx, dz) to use
+            when creating VelocityModel2D objects from NumPy arrays. Defaults to (10.0, 10.0).
 
     Returns:
         List[VelocityModel2D]: List of VelocityModel2D objects.
@@ -49,6 +58,19 @@ def _load_velocity_models(
         raise FileNotFoundError(f"Models file not found: {models_path}")
     # end if
 
+    # Try to load using the new load_velocity_models function
+    try:
+        models = load_velocity_models(models_path)
+        # Filter to only include VelocityModel2D objects
+        velocity_models = [model for model in models if isinstance(model, VelocityModel2D)]
+        if velocity_models:
+            return velocity_models
+    except Exception as e:
+        # If loading with load_velocity_models fails, try the legacy approach
+        console.print(f"[yellow]Warning: Failed to load models using load_velocity_models: {e}[/yellow]")
+        console.print("[yellow]Falling back to legacy loading method...[/yellow]")
+    
+    # Legacy loading approach
     try:
         models_array = np.load(models_path)
     except Exception as e:
@@ -65,7 +87,7 @@ def _load_velocity_models(
     # Convert to list of VelocityModel2D objects
     velocity_models = []
     for i in range(models_array.shape[0]):
-        velocity_models.append(VelocityModel2D(models_array[i]))
+        velocity_models.append(VelocityModel2D(models_array[i], grid_spacing=default_grid_spacing))
     # end for
 
     return velocity_models
@@ -198,23 +220,27 @@ def run_openfwi_simulation(
         A dictionary containing the velocity model, simulated shot gathers, and
         auxiliary metadata required for plotting.
     """
-    velocity_models = _load_velocity_models(models_path)
+    # Load configuration first to get dx and dz
+    config = _load_simulation_config(config_path)
+    
+    # Load velocity models with the grid spacing from the config
+    velocity_models = _load_velocity_models(
+        models_path, 
+        default_grid_spacing=(float(config["dx"]), float(config["dz"]))
+    )
     n_models = len(velocity_models)
 
     if not 0 <= model_index < n_models:
         raise IndexError(f"Model index {model_index} out of bounds (0 <= idx < {n_models})")
     # end if
 
-    # Load configuration
-    config = _load_simulation_config(config_path)
-
     # Get current model
     velocity_model = velocity_models[model_index]
-    
+    print(velocity_model)
     # Get model dimensions and properties
     nz, nx = velocity_model.shape
-    dx = velocity_model.dx if hasattr(velocity_model, 'dx') else float(config["dx"])
-    dz = velocity_model.dz if hasattr(velocity_model, 'dz') else float(config["dz"])
+    dx = velocity_model.dx
+    dz = velocity_model.dz
 
     # Other simulation parameters
     sx = float(config["sx"])
