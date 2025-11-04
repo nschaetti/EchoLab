@@ -14,8 +14,8 @@ from rich.console import Console
 from rich.table import Table
 
 from echolab.modeling import generate_models as synthesize_velocity_models
-from echolab.modeling.velocity_models import Dimensionality, save_velocity_models
-from echolab.modeling.model_generation_config import ModelGenerationConfig
+from echolab.modeling.velocity import Dimensionality, save_velocity_models
+from echolab.modeling.generation import ModelGenerationConfig
 
 # Create console for rich output
 console = Console()
@@ -40,6 +40,7 @@ def _load_generation_config(config_path: Path) -> ModelGenerationConfig:
         return ModelGenerationConfig.from_yaml(config_path)
     except (FileNotFoundError, yaml.YAMLError) as exc:
         raise exc
+# end def _load_generation_config
 
 
 def _coerce_probability_map(
@@ -76,6 +77,7 @@ def _coerce_probability_map(
             raise ValueError(f"{label.capitalize()} probability for '{name}' must be non-negative.")
         
         result[name] = probability
+    # end for
     
     # Normalize probabilities if requested
     if normalise and result:
@@ -85,8 +87,11 @@ def _coerce_probability_map(
         
         for name in result:
             result[name] /= total
+        # end for
+    # end if
     
     return result
+# end def _coerce_probability_map
 
 
 def _extract_numeric(
@@ -129,11 +134,13 @@ def _extract_numeric(
             return None
         else:
             raise ValueError(f"Configuration must define '{name}'.")
+    # end if
     
     try:
         return converter(value)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"Configuration field '{name}' has an invalid value.") from exc
+# end def _extract_numeric
 
 
 def _extract_model_parameters(
@@ -149,32 +156,26 @@ def _extract_model_parameters(
         Tuple containing:
         - Dictionary of global model settings
         - Dictionary of per-model settings
-        
-    Raises:
-        ValueError: If model_params is not a mapping
     """
-    model_params_section = config.get_parameter("model_params", {})
-    if model_params_section is None:
-        model_params_section = {}
+    # Convert model_params to dict for compatibility
+    model_params_dict = config.model_params.model_dump()
     
-    if not isinstance(model_params_section, dict):
-        raise ValueError("'model_params' must be a mapping.")
-    
-    # Global settings
+    # Global settings (grid parameters)
     global_model_settings: Dict[str, Any] = {
         key: value
-        for key, value in model_params_section.items()
-        if not isinstance(value, dict)
+        for key, value in model_params_dict.items()
+        if key in ["nx", "nz", "dx", "dz", "sigma"]
     }
 
     # Per model settings
     per_model_settings: Dict[str, Dict[str, Any]] = {
         key: value
-        for key, value in model_params_section.items()
-        if isinstance(value, dict)
+        for key, value in model_params_dict.items()
+        if key in ["layered", "fault", "dome", "perlin"]
     }
     
     return global_model_settings, per_model_settings
+# end def _extract_model_parameters
 
 
 def _extract_grid_parameters(
@@ -190,25 +191,19 @@ def _extract_grid_parameters(
         
     Returns:
         Tuple containing nx, nz, dx, dz, ny, dy parameters
-        
-    Raises:
-        ValueError: If grid dimensions or spacing are invalid
     """
-    # Extract parameters
-    nx = _extract_numeric(config, global_model_settings, "nx", int)
-    nz = _extract_numeric(config, global_model_settings, "nz", int)
-    dx = _extract_numeric(config, global_model_settings, "dx", float)
-    dz = _extract_numeric(config, global_model_settings, "dz", float)
-    
-    # Valid nx, nz, dx, dz
-    if nx <= 0 or nz <= 0 or dx <= 0 or dz <= 0:
-        raise ValueError("Grid dimensions (nx, nz) and spacing (dx, dz) must be positive.")
+    # Extract parameters directly from model_params
+    nx = config.model_params.nx
+    nz = config.model_params.nz
+    dx = config.model_params.dx
+    dz = config.model_params.dz
     
     # For 3D models, get ny and dy parameters
-    ny = config.get_parameter("ny", None)
-    dy = config.get_parameter("dy", None)
+    ny = config.model_params.ny if config.dimensionality == "3D" else None
+    dy = config.model_params.dy if config.dimensionality == "3D" else None
     
     return nx, nz, dx, dz, ny, dy
+# end def _extract_grid_parameters
 
 
 def _extract_validation_parameters(
@@ -224,26 +219,16 @@ def _extract_validation_parameters(
         
     Returns:
         Tuple containing min_velocity, max_velocity, unique_thresh, entropy_thresh, zero_thresh
-        
-    Raises:
-        ValueError: If validation section is not a mapping
     """
-    # Get validation parameters
-    validation_section = config.get_parameter("validation", {})
-    if validation_section is None:
-        validation_section = {}
-    
-    if not isinstance(validation_section, dict):
-        raise ValueError("'validation' must be a mapping when provided.")
-    
-    # Get validation parameters
-    min_velocity = float(validation_section.get("min_v", config.get_parameter("min_v", config.get_parameter("min_velocity", 1000.0))))
-    max_velocity = float(validation_section.get("max_v", config.get_parameter("max_v", config.get_parameter("max_velocity", 5000.0))))
-    unique_thresh = float(validation_section.get("unique_thresh", config.get_parameter("unique_thresh", 0.99)))
-    entropy_thresh = float(validation_section.get("entropy_thresh", config.get_parameter("entropy_thresh", 1.0)))
-    zero_thresh = float(validation_section.get("zero_thresh", config.get_parameter("zero_thresh", 0.01)))
+    # Get validation parameters directly from the validation attribute
+    min_velocity = config.validation.min_v
+    max_velocity = config.validation.max_v
+    unique_thresh = config.validation.unique_thresh
+    entropy_thresh = config.validation.entropy_thresh
+    zero_thresh = config.validation.zero_thresh
     
     return min_velocity, max_velocity, unique_thresh, entropy_thresh, zero_thresh
+# end def _extract_validation_parameters
 
 
 def _extract_model_blur_sigma(
@@ -262,15 +247,14 @@ def _extract_model_blur_sigma(
     Returns:
         Model blur sigma value
     """
-    # Get model_blur_sigma from config or fallback to global_model_settings
-    model_blur_sigma = float(
-        config.get_parameter(
-            "model_blur_sigma",
-            global_model_settings.get("sigma", 0.0),
-        )
-    )
-
-    # If not found, try to find in per_model_settings
+    # Get model_blur_sigma directly from config
+    model_blur_sigma = config.model_blur_sigma
+    
+    # If it's 0, try to get from global_model_settings
+    if model_blur_sigma == 0.0 and "sigma" in global_model_settings:
+        model_blur_sigma = float(global_model_settings["sigma"])
+    
+    # If still 0, try to find in per_model_settings
     if model_blur_sigma == 0.0:
         for params in per_model_settings.values():
             if isinstance(params, dict) and "sigma" in params:
@@ -279,8 +263,13 @@ def _extract_model_blur_sigma(
                     break
                 except (TypeError, ValueError):
                     continue
+                # end try
+            # end if
+        # end for
+    # end if
     
     return model_blur_sigma
+# end def _extract_model_blur_sigma
 
 
 def _extract_model_types_and_probabilities(
@@ -296,18 +285,10 @@ def _extract_model_types_and_probabilities(
         Tuple containing:
         - List of model types
         - Dictionary mapping model types to probabilities
-        
-    Raises:
-        ValueError: If model types or probabilities are invalid
     """
-    # Get model types and probabilities
-    model_types = list(config.get_parameter("model_types", []))
-    if not model_types:
-        raise ValueError("Configuration must provide at least one entry in 'model_types'.")
-    
-    model_probs_map = config.get_parameter("model_probs") or config.get_parameter("model_probabilities") or {}
-    if not isinstance(model_probs_map, dict):
-        raise ValueError("'model_probs' or 'model_probabilities' must map model names to probability weights.")
+    # Get model types and probabilities directly from config
+    model_types = list(config.model_types)
+    model_probs_map = config.model_probabilities
     
     # Convert a mapping of string keys to floats,
     # ensuring each requested key exists.
@@ -319,6 +300,7 @@ def _extract_model_types_and_probabilities(
     )
     
     return model_types, model_probs
+# end def _extract_model_types_and_probabilities
 
 
 def _sanitize_model_parameters(
@@ -343,15 +325,19 @@ def _sanitize_model_parameters(
         params = per_model_settings.get(name, {})
         if params is None:
             params = {}
+        # end if
         
         if not isinstance(params, dict):
             raise ValueError(f"Parameters for model '{name}' must be a mapping.")
+        # end if
         
         params_copy = dict(params)
         params_copy.pop("sigma", None)
         sanitised_model_params[name] = params_copy
+    # end for
     
     return sanitised_model_params
+# end def _sanitize_model_parameters
 
 
 def _extract_transform_types_and_probabilities(
@@ -367,15 +353,10 @@ def _extract_transform_types_and_probabilities(
         Tuple containing:
         - List of transform types
         - Dictionary mapping transform types to probabilities
-        
-    Raises:
-        ValueError: If transform types or probabilities are invalid
     """
-    # Get transform types and probabilities
-    transform_types = list(config.get_parameter("transform_types") or config.get_parameter("transforms") or [])
-    transform_probs_map = config.get_parameter("transform_probs") or config.get_parameter("transform_probabilities") or {}
-    if transform_types and not isinstance(transform_probs_map, dict):
-        raise ValueError("'transform_probs' or 'transform_probabilities' must map transform names to probabilities.")
+    # Get transform types and probabilities directly from config
+    transform_types = list(config.transforms)
+    transform_probs_map = config.transform_probabilities
     
     transform_probs: Dict[str, float] = {}
     for name in transform_types:
@@ -385,9 +366,12 @@ def _extract_transform_types_and_probabilities(
             raise ValueError(f"Transform probability for '{name}' must be numeric.") from exc
         if probability < 0.0 or probability > 1.0:
             raise ValueError(f"Transform probability for '{name}' must lie within [0, 1].")
+        # end if
         transform_probs[name] = probability
+    # end for
     
     return transform_types, transform_probs
+# end def _extract_transform_types_and_probabilities
 
 
 def _extract_transform_parameters(
@@ -411,10 +395,13 @@ def _extract_transform_parameters(
     transform_params = config.get_parameter("transform_params", {})
     if transform_params is None:
         transform_params = {}
+    # end if
     if not isinstance(transform_params, dict):
         raise ValueError("'transform_params' must be a mapping of transform names to parameter dictionaries.")
+    # end if
     
     return {name: transform_params.get(name, {}) for name in transform_types}
+# end def _extract_transform_parameters
 
 
 def _display_results_table(
@@ -460,6 +447,7 @@ def _display_results_table(
         info_table.add_row("Grid size", f"{nz} x {nx}")
     elif dim_str == "3D":
         info_table.add_row("Grid size", f"{nz} x {ny} x {nx}")
+    # end if
         
     info_table.add_row("Model types", ", ".join(model_types))
     info_table.add_row(
@@ -467,6 +455,7 @@ def _display_results_table(
         ", ".join(transform_types) if transform_types else "None",
     )
     console.print(info_table)
+# end def _display_results_table
 
 
 def generate_models(
@@ -505,14 +494,18 @@ def generate_models(
             raise FileExistsError(
                 f"Output file '{output_path}' already exists. Use --overwrite to replace it."
             )
+        # end if
 
         # Override dimensionality if specified
         if dim:
             config._config["dimensionality"] = dim
+        # end if
 
         # Extract model parameters
-        global_model_settings, per_model_settings = _extract_model_parameters(config)
-        
+        global_model_settings, per_model_settings = _extract_model_parameters(
+            config=config
+        )
+
         # Extract grid parameters
         nx, nz, dx, dz, ny, dy = _extract_grid_parameters(config, global_model_settings)
         
@@ -520,6 +513,7 @@ def generate_models(
         n_models = _extract_numeric(config, global_model_settings, "n_models", int)
         if n_models <= 0:
             raise ValueError("Configuration 'n_models' must be a positive integer.")
+        # end if
         
         # Extract validation parameters
         min_velocity, max_velocity, unique_thresh, entropy_thresh, zero_thresh = _extract_validation_parameters(
@@ -600,3 +594,5 @@ def generate_models(
         )
     except (FileNotFoundError, FileExistsError, ValueError, yaml.YAMLError) as exc:
         raise exc
+    # end try
+# end def generate_models

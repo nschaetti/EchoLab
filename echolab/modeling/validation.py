@@ -14,12 +14,22 @@ import numpy as np
 
 def entropy_score(model: np.ndarray, n_bins: int = 64) -> float:
     """
-    Calculate the Shannon entropy of the model (discretized histogram).
+    Calculate the Shannon entropy of the model using a discretized histogram.
+    
+    Higher entropy indicates more variability in the model values, which is
+    generally desirable for realistic velocity models.
+    
+    Args:
+        model: Velocity model as a numpy array
+        n_bins: Number of bins for the histogram
+        
+    Returns:
+        Shannon entropy value (higher is more diverse)
     """
     hist, _ = np.histogram(model, bins=n_bins, density=True)
-    hist = hist[hist > 0]
+    hist = hist[hist > 0]  # Remove zero probability bins
     return -np.sum(hist * np.log2(hist))
-# end entropy_score
+# end def entropy_score
 
 
 def is_valid_model(
@@ -32,7 +42,26 @@ def is_valid_model(
     verbose: bool = False,
 ) -> bool:
     """
-    Check if a velocity model is geologically valid.
+    Check if a velocity model is geologically valid based on multiple criteria.
+    
+    A valid model should:
+    - Have all values within the specified range
+    - Not contain NaN or Inf values
+    - Not have too many zero or near-zero values
+    - Not be dominated by a single value
+    - Have sufficient entropy (variability)
+    
+    Args:
+        model: Velocity model as a numpy array
+        min_v: Minimum allowed velocity value
+        max_v: Maximum allowed velocity value
+        zero_thresh: Maximum allowed fraction of near-zero values
+        unique_thresh: Maximum allowed fraction of a single value
+        entropy_thresh: Minimum allowed entropy score
+        verbose: Whether to print detailed validation messages
+        
+    Returns:
+        True if the model is valid, False otherwise
     """
     if not np.all((model >= min_v) & (model <= max_v)):
         if verbose:
