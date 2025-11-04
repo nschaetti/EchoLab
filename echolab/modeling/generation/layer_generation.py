@@ -7,14 +7,7 @@ including layered models, fault models, dome models, and perlin noise-based mode
 
 import numpy as np
 from typing import List, Optional, Tuple, Union
-import matplotlib.pyplot as plt
-from pathlib import Path
-
-try:
-    from noise import pnoise2
-    NOISE_AVAILABLE = True
-except ImportError:
-    NOISE_AVAILABLE = False
+from noise import pnoise2
 
 
 def layered_model(

@@ -1,0 +1,246 @@
+# =============================================================================
+# Velocity Map 2D Configuration - Improved Structure
+# =============================================================================
+# This file configures the generation of 2D velocity models for seismic simulations
+
+# =============================================================================
+# General Configuration
+# =============================================================================
+# Random seed for reproducibility
+random_seed: 42
+
+# Grid configuration
+grid:
+  # Grid spacing in x-direction (meters)
+  spacing_x: 10.0
+  # Grid spacing in z-direction (meters)
+  spacing_z: 10.0
+  # Number of grid points in x-direction
+  points_x: 70
+  # Number of grid points in z-direction
+  points_z: 70
+# end grid
+
+# Gaussian blur sigma applied to all models for smoothing
+smoothing_sigma: 0.75
+
+# =============================================================================
+# Model Types Configuration
+# =============================================================================
+model_types:
+
+  # Available model types to generate
+  available_types: 
+    - layered  # Models with horizontal layers of different velocities
+    - fault    # Models with fault structures
+    - dome     # Models with dome-like structures
+    - perlin   # Models generated using Perlin noise
+  # end available_types
+  
+  # Probability of selecting each model type (values between 0.0 and 1.0)
+  selection_probabilities:
+    layered: 1.0  # Only layered models will be generated
+    fault: 0.0    # No fault models will be generated
+    dome: 0.0     # No dome models will be generated
+    perlin: 0.0   # No perlin noise models will be generated
+  # end selection_probabilities
+
+# end model_types
+
+# =============================================================================
+# Model Type Parameters
+# =============================================================================
+model_parameters:
+
+  # Parameters specific to layered models
+  layered:
+    # Range for number of layers [min, max]
+    num_layers: [3, 12]
+    # Velocity range for layers in m/s [min, max]
+    min_velocity: 1500
+    max_velocity: 4500
+    # Smoothing
+    smoothing: 0.0
+  # end layered
+  
+  # Parameters specific to fault models
+  fault:
+    # Base velocity range in m/s [min, max]
+    base_velocity_range: [3000, 3500]
+    # Velocity difference across fault in m/s [min, max]
+    velocity_difference_range: [500, 1500]
+    # Fault slope range [min, max]
+    slope_range: [0.1, 0.5]
+    # Fault offset range in grid points [min, max]
+    offset_range: [15, 50]
+    # Gaussian blur sigma for smoothing
+    smoothing_sigma: 0.75
+  # end fault
+  
+  # Parameters specific to dome models
+  dome:
+    # Range for dome center position in grid points [min, max]
+    center_position_range: [35, 50]
+    # Range for dome radius in grid points [min, max]
+    radius_range: [15, 35]
+    # Velocity range for high velocity region (inside dome) in m/s [min, max]
+    high_velocity_range: [2500, 4500]
+    # Velocity range for low velocity region (outside dome) in m/s [min, max]
+    low_velocity_range: [1500, 2000]
+    # Gaussian blur sigma for smoothing
+    smoothing_sigma: 0.75
+  # end dome
+  
+  # Parameters specific to perlin noise models
+  perlin:
+    # Scale range for Perlin noise [min, max]
+    noise_scale_range: [15.0, 65.0]
+    # Velocity range in m/s [min, max]
+    velocity_range: [2500, 4500]
+    # Contrast range for velocity variations [min, max]
+    contrast_range: [500, 1000]
+    # Range for number of octaves in Perlin noise [min, max]
+    octave_count_range: [6, 12]
+    # Gaussian blur sigma for smoothing
+    smoothing_sigma: 0.75
+  # end perlin
+
+# end model_parameters
+
+# =============================================================================
+# Transformations Configuration
+# =============================================================================
+transformations:
+
+  # Available transformations to apply to generated models
+  available_transforms: 
+    - rotate              # Rotate the model
+    - stretch             # Stretch the model
+    - inclusion           # Add small velocity anomalies
+    - perlin_noise        # Add Perlin noise
+    - add_crossline       # Add horizontal or vertical lines
+    - swirl               # Apply swirl effect
+    - piecewise_affine    # Apply piecewise affine transformation
+    - displacement_field  # Apply displacement field
+  # end available_transforms
+  
+  # Probability of applying each transformation (values between 0.0 and 1.0)
+  application_probabilities:
+    rotate: 0.4                # 40% chance to rotate the model
+    stretch: 0.4               # 40% chance to stretch the model
+    inclusion: 0.4             # 40% chance to add inclusions
+    perlin_noise: 0.4          # 40% chance to add Perlin noise
+    add_crossline: 0.4         # 40% chance to add crosslines
+    swirl: 0.4                 # 40% chance to apply swirl effect
+    piecewise_affine: 0.0      # 0% chance to apply piecewise affine transformation
+    displacement_field: 1.0    # 100% chance to apply displacement field
+  # end application_probabilities
+  
+  # External transformations (currently disabled)
+  external:
+    # Probability of applying scikit-image transformations
+    skimage_probability: 0.0
+
+    # Crop ratio for scikit-image transformations
+    skimage_crop_ratio: 0.0
+  # end external
+
+# end transformations
+
+# =============================================================================
+# Transformation Parameters
+# =============================================================================
+transformation_parameters:
+
+  # Rotation transformation parameters
+  rotate:
+    # Range for rotation angle in degrees [min, max]
+    angle_range: [-10, 10]
+  # end rotate
+  
+  # Stretching transformation parameters
+  stretch:
+    # Range for scaling factor [min, max]
+    scale_range: [1.0, 1.3]
+  # end stretch
+  
+  # Inclusion transformation parameters (adds small velocity anomalies)
+  inclusion:
+    # Range for inclusion radius in grid points [min, max]
+    radius_range: [5, 10]
+    # Range for inclusion velocity in m/s [min, max]
+    velocity_range: [1300, 2200]
+    # Range for number of inclusions to add [min, max]
+    n_inclusions_range: [1, 5]
+  # end inclusion
+  
+  # Perlin noise transformation parameters
+  perlin_noise:
+    # Scale range for Perlin noise [min, max]
+    scale_range: [500, 550]
+    # Amplitude of Perlin noise in m/s
+    amplitude: 150
+    # Octave levels for Perlin noise
+    n_levels: [-1, -0.5, 0, 0.5, 1]
+  # end perlin_noise
+  
+  # Crossline transformation parameters (adds horizontal or vertical lines)
+  add_crossline:
+    # Range for crossline thickness in grid points [min, max]
+    thickness_range: [5, 15]
+    # Range for crossline velocity in m/s [min, max]
+    velocity_range: [1300, 3000]
+  # end add_crossline
+  
+  # Swirl transformation parameters
+  swirl:
+    # Range for swirl center position in grid points [min, max]
+    center_range: [0, 70]
+    # Range for swirl strength [min, max]
+    strength_range: [3, 5]
+    # Range for swirl radius in grid points [min, max]
+    radius_range: [70, 100]
+  # end swirl
+  
+  # Piecewise affine transformation parameters (currently disabled)
+  piecewise_affine:
+    # Grid shape for control points
+    grid_shape: [5, 5]
+    # Standard deviation of displacement
+    displacement_sigma: 0.5
+  # end piecewise_affine
+  
+  # Displacement field transformation parameters
+  displacement_field:
+    # Maximum displacement in grid points
+    max_displacement: 10.0
+    # Sigma for smoothing the displacement field
+    smooth_sigma: 8.0
+  # end displacement_field
+
+# end transformation_parameters
+
+# =============================================================================
+# Validation Configuration
+# =============================================================================
+validation:
+
+  # Velocity constraints
+  velocity:
+    # Minimum valid velocity in m/s
+    min_velocity: 1000
+    # Maximum valid velocity in m/s
+    max_velocity: 5000
+  # end velocity
+  
+  # Quality thresholds
+  quality:
+    # Threshold for zero values (percentage of model that can be zero)
+    zero_threshold: 0.01
+    # Threshold for uniqueness (minimum percentage of unique values required)
+    uniqueness_threshold: 0.85
+    # Threshold for entropy (minimum entropy required for model complexity)
+    entropy_threshold: 0.2
+  # end quality
+
+# end validation

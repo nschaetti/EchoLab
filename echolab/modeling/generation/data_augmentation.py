@@ -5,911 +5,578 @@ This module provides classes and functions for applying various transformations
 to velocity models for data augmentation purposes.
 """
 
+# Imports
+from typing import Tuple, List, Dict, Union, Optional, Any, Callable
 import numpy as np
-from typing import Callable, Dict, List, Optional, Tuple, Union, Any
-import matplotlib.pyplot as plt
-from pathlib import Path
+from skimage.transform import swirl, resize, warp, PiecewiseAffineTransform
+from .layer_generation import generate_perlin_noise_2d
+from skimage.util import img_as_float32
+from skimage.transform import rotate
+from scipy.ndimage import rotate as sci_rotate
+from scipy.ndimage import zoom
+from scipy.ndimage import gaussian_filter
 
-try:
-    import cv2
-    CV2_AVAILABLE = True
-except ImportError:
-    CV2_AVAILABLE = False
+
+# region METHODS
+
+
+def crop_and_resize(
+        img: np.ndarray,
+        target_shape: Tuple[int, int] = (70, 70),
+        crop_ratio: float = 0.9
+) -> np.ndarray:
+    """
+    Center-crop an image and resize it to the target shape.
+
+    Args:
+        img: 2D array representing the image
+        target_shape: Final (height, width) of the output image
+        crop_ratio: Zoom ratio (e.g., 0.9 to crop 10% from edges)
+
+    Returns:
+        Cropped and resized image
+    """
+    h, w = img.shape
+    ch, cw = int(h * crop_ratio), int(w * crop_ratio)
+    start_h = (h - ch) // 2
+    start_w = (w - cw) // 2
+    cropped = img[start_h:start_h + ch, start_w:start_w + cw]
+    return resize(cropped, target_shape, mode='reflect', anti_aliasing=True)
+# end crop_and_resize
+
+
+
+def apply_random_transformations(
+        vel: np.ndarray,
+        rng: np.random.Generator,
+        apply_prob: float = 0.5,
+        crop_ratio: float = 0.9
+) -> np.ndarray:
+    """
+    Apply a series of random transformations to a velocity model.
+
+    Args:
+        vel: Input velocity model as a 2D array
+        rng: Random number generator
+        apply_prob: Probability of applying each transformation
+        crop_ratio: Ratio for final cropping
+
+    Returns:
+        Transformed velocity model
+    """
+    transformed = img_as_float32(vel)
+
+    # Light swirl
+    if rng.random() < apply_prob:
+        strength = rng.uniform(1, 3)
+        radius = rng.uniform(100, 300)
+        transformed = swirl(transformed, strength=strength, radius=radius)
+    # end if
+
+    # Resize (then back to original size)
+    if rng.random() < apply_prob:
+        factor = rng.uniform(0.8, 1.2)
+        small = resize(transformed, (int(vel.shape[0] * factor), int(vel.shape[1] * factor)),
+                      mode='reflect', anti_aliasing=True)
+        transformed = resize(small, vel.shape, mode='reflect', anti_aliasing=True)
+    # end if
+
+    # Piecewise Affine
+    if rng.random() < apply_prob:
+        rows, cols = vel.shape
+        src_cols = np.linspace(0, cols, 5)
+        src_rows = np.linspace(0, rows, 5)
+        src = np.dstack(np.meshgrid(src_cols, src_rows)).reshape(-1, 2)
+        dst = src + rng.normal(scale=5.0, size=src.shape)  # small displacements
+
+        tform = PiecewiseAffineTransform()
+        tform.estimate(src, dst)
+        transformed = warp(transformed, tform, output_shape=vel.shape)
+    # end if
+
+    # Rescale to original range
+    transformed = transformed - transformed.min()
+    transformed = transformed / transformed.max()
+    transformed = transformed * (vel.max() - vel.min()) + vel.min()
+
+    # Zoom to avoid edges and resize to original size
+    transformed = crop_and_resize(transformed, target_shape=vel.shape, crop_ratio=crop_ratio)
+
+    return transformed
+# end apply_random_transformations
+
+
+# endregion METHODS
+
+
+# region TRANSFORMS
+
+
+class RandomSwirl:
+    """
+    Apply random swirl transformation to an image.
+
+    This transformation creates a swirling effect by rotating pixels around a center point,
+    with the rotation angle decreasing with distance from the center.
+    """
+
+    def __init__(
+            self,
+            center_range: Tuple[float, float],
+            strength_range: Tuple[float, float],
+            radius_range: Tuple[float, float],
+            rng: Optional[np.random.Generator] = None
+    ):
+        """
+        Initialize the RandomSwirl transformation.
+
+        Args:
+            center_range: Range for center coordinates
+            strength_range: Range for swirl strength
+            radius_range: Range for swirl radius
+            rng: Random number generator
+        """
+        self.strength_range = strength_range
+        self.radius_range = radius_range
+        self.rng = np.random.default_rng() if rng is None else rng
+    # end __init__
+
+    def __call__(self, image: np.ndarray) -> np.ndarray:
+        """
+        Apply the swirl transformation to an image.
+
+        Args:
+            image: Input image as a 2D array
+
+        Returns:
+            Transformed image
+        """
+        center_x = self.rng.uniform(-self.radius_range[0], self.radius_range[0])
+        center_z = self.rng.uniform(-self.radius_range[0], self.radius_range[0])
+        strength = self.rng.uniform(*self.strength_range)
+        radius = self.rng.uniform(*self.radius_range)
+        return swirl(image, center=(center_x, center_z), strength=strength, radius=radius)
+    # end __call__
+
+# end RandomSwirl
+
+
+class RandomPiecewiseAffine:
+    """
+    Apply random piecewise affine transformation to an image.
+
+    This transformation divides the image into a grid and applies random displacements
+    to the grid points, creating local distortions in the image.
+    """
+
+    def __init__(
+            self,
+            grid_shape: Tuple[int, int] = (5, 5),
+            displacement_sigma: float = 5.0,
+            rng: Optional[np.random.Generator] = None
+    ):
+        """
+        Initialize the RandomPiecewiseAffine transformation.
+
+        Args:
+            grid_shape: Shape of the grid (rows, cols)
+            displacement_sigma: Standard deviation of the random displacements
+            rng: Random number generator
+        """
+        self.grid_shape = grid_shape
+        self.displacement_sigma = displacement_sigma
+        self.rng = np.random.default_rng() if rng is None else rng
+    # end __init__
+
+    def __call__(self, image: np.ndarray) -> np.ndarray:
+        """
+        Apply the piecewise affine transformation to an image.
+
+        Args:
+            image: Input image as a 2D array
+
+        Returns:
+            Transformed image
+        """
+        rows, cols = image.shape
+        src_cols = np.linspace(0, cols, self.grid_shape[1])
+        src_rows = np.linspace(0, rows, self.grid_shape[0])
+        src = np.dstack(np.meshgrid(src_cols, src_rows)).reshape(-1, 2)
+        dst = src + self.rng.normal(scale=self.displacement_sigma, size=src.shape)
+
+        tform = PiecewiseAffineTransform()
+        tform.estimate(src, dst)
+        return warp(image, tform, output_shape=image.shape)
+    # end __call__
+
+# end RandomPiecewiseAffine
+
+
+class RandomDisplacementField:
+    """
+    Apply random displacement field transformation to an image.
+
+    This transformation creates a smooth random displacement field and warps
+    the image according to this field, creating natural-looking deformations.
+    """
+
+    def __init__(
+            self,
+            max_displacement: float,
+            smooth_sigma: float,
+            rng: Optional[np.random.Generator] = None
+    ):
+        """
+        Initialize the RandomDisplacementField transformation.
+
+        Args:
+            max_displacement: Maximum amplitude of displacements (in pixels)
+            smooth_sigma: Standard deviation of Gaussian blur for smoothing the field
+            rng: Random number generator
+        """
+        self.max_displacement = max_displacement
+        self.smooth_sigma = smooth_sigma
+        self.rng = np.random.default_rng() if rng is None else rng
+    # end __init__
+
+    def __call__(self, image: np.ndarray) -> np.ndarray:
+        """
+        Apply the displacement field transformation to an image.
+
+        Args:
+            image: Input image as a 2D array
+
+        Returns:
+            Transformed image
+        """
+        h, w = image.shape
+
+        # Random noise for dx and dy
+        dx = self.rng.normal(0, 1, (h, w))
+        dy = self.rng.normal(0, 1, (h, w))
+
+        # Smoothing to make the field spatially coherent
+        dx = gaussian_filter(dx, sigma=self.smooth_sigma)
+        dy = gaussian_filter(dy, sigma=self.smooth_sigma)
+
+        # Normalization and scaling
+        dx = (dx / np.max(np.abs(dx))) * self.max_displacement
+        dy = (dy / np.max(np.abs(dy))) * self.max_displacement
+
+        # Deformed coordinate grid
+        coords = np.meshgrid(np.arange(h), np.arange(w), indexing='ij')
+        coords_deformed = np.array([coords[0] + dx, coords[1] + dy])
+
+        # Apply the deformation
+        warped = warp(image, coords_deformed, mode='reflect')
+
+        return warped
+    # end __call__
+
+# end RandomDisplacementField
+
+
+
+
+class AddCrossLine:
+    """
+    Add a random cross line to a velocity model.
+
+    This transformation adds a straight line with random thickness, velocity,
+    position, and orientation to the velocity model.
+    """
+
+    def __init__(self, thickness_range: Tuple[int, int] = (2, 10),
+                 velocity_range: Tuple[float, float] = (1000, 4000),
+                 rng: Optional[np.random.Generator] = None):
+        """
+        Initialize the AddCrossLine transformation.
+
+        Args:
+            thickness_range: Range for line thickness (min, max)
+            velocity_range: Range for line velocity (min, max)
+            rng: Random number generator
+        """
+        self.thickness_range = thickness_range
+        self.velocity_range = velocity_range
+        self.rng = np.random.default_rng() if rng is None else rng
+    # end __init__
+
+    def __call__(self, vel: np.ndarray) -> np.ndarray:
+        """
+        Add a cross line to the velocity model.
+
+        Args:
+            vel: Input velocity model as a 2D array
+
+        Returns:
+            Velocity model with added cross line
+        """
+        nz, nx = vel.shape
+        line_img = np.copy(vel)
+
+        # Line thickness and velocity
+        thickness = self.rng.integers(*self.thickness_range)
+        v_line = self.rng.uniform(*self.velocity_range)
+
+        # Create a binary image with a horizontal line in the middle
+        line_mask = np.zeros_like(vel, dtype=bool)
+        center = self.rng.integers(thickness, nz - thickness)
+        line_mask[center - thickness // 2 : center + thickness // 2, :] = True
+
+        # Apply random rotation around the center of the image
+        angle = self.rng.uniform(-45, 45)
+        rotated = rotate(line_mask.astype(float), angle=angle, resize=False, order=1, mode='reflect', cval=0)
+
+        # Apply the line to the model
+        line_img[rotated > 0.5] = v_line
+
+        return line_img
+    # end __call__
+
+# end AddCrossLine
+
+
+class RandomTransformer:
+    """
+    Apply a sequence of transformations to a velocity model.
+
+    This class allows chaining multiple transformations together and applying
+    them in sequence to a velocity model.
+    """
+
+    def __init__(self, transforms: List[Callable[[np.ndarray], np.ndarray]]):
+        """
+        Initialize the RandomTransformer.
+
+        Args:
+            transforms: List of transformation functions or callable objects
+        """
+        self.transforms = transforms
+    # end __init__
+
+    def __call__(self, vel: np.ndarray) -> np.ndarray:
+        """
+        Apply all transformations in sequence.
+
+        Args:
+            vel: Input velocity model as a 2D array
+
+        Returns:
+            Transformed velocity model
+        """
+        for t in self.transforms:
+            vel = t(vel)
+        # end for
+        return vel
+    # end __call__
+
+# end RandomTransformer
 
 
 class RandomRotation:
     """
     Apply random rotation to a velocity model.
-    
-    Attributes:
-        max_angle: Maximum rotation angle in degrees
-        fill_value: Value to fill empty areas after rotation
+
+    This transformation rotates the velocity model by a random angle within
+    the specified range.
     """
-    
-    def __init__(self, max_angle: float = 10.0, fill_value: Optional[float] = None):
+
+    def __init__(self, angle_range: Tuple[float, float] = (-10, 10),
+                 rng: Optional[np.random.Generator] = None):
         """
-        Initialize the RandomRotation transformer.
-        
+        Initialize the RandomRotation transformation.
+
         Args:
-            max_angle: Maximum rotation angle in degrees
-            fill_value: Value to fill empty areas after rotation (default: use edge values)
+            angle_range: Range of rotation angles in degrees (min, max)
+            rng: Random number generator
         """
-        self.max_angle = max_angle
-        self.fill_value = fill_value
-    # end def __init__
-    
+        self.angle_range = angle_range
+        self.rng = rng if rng is not None else np.random.default_rng()
+    # end __init__
+
     def __call__(self, model: np.ndarray) -> np.ndarray:
         """
         Apply random rotation to the model.
-        
+
         Args:
-            model: 2D numpy array representing the velocity model
-            
+            model: Input velocity model as a 2D array
+
         Returns:
-            Transformed velocity model
+            Rotated velocity model
         """
-        if not CV2_AVAILABLE:
-            raise ImportError("OpenCV (cv2) is required for RandomRotation. "
-                             "Install it with 'pip install opencv-python'.")
-        # end if
-        
-        # Generate random angle
-        angle = np.random.uniform(-self.max_angle, self.max_angle)
-        
-        # Get model dimensions
-        height, width = model.shape
-        center = (width // 2, height // 2)
-        
-        # Create rotation matrix
-        rotation_matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
-        
-        # Determine border mode and value
-        if self.fill_value is None:
-            border_mode = cv2.BORDER_REPLICATE
-            border_value = 0
-        else:
-            border_mode = cv2.BORDER_CONSTANT
-            border_value = self.fill_value
-        # end if
-        
-        # Apply rotation
-        rotated = cv2.warpAffine(
-            model.astype(np.float32),
-            rotation_matrix,
-            (width, height),
-            borderMode=border_mode,
-            borderValue=border_value
-        )
-        
-        return rotated
-    # end def __call__
-# end class RandomRotation
+        angle = self.rng.uniform(*self.angle_range)
+        return sci_rotate(model, angle, reshape=False, mode="nearest")
+    # end __call__
+
+# end RandomRotation
 
 
 class RandomStretch:
     """
     Apply random stretching to a velocity model.
-    
-    Attributes:
-        max_factor_x: Maximum stretch factor in x direction
-        max_factor_z: Maximum stretch factor in z direction
-        fill_value: Value to fill empty areas after stretching
+
+    This transformation scales the velocity model by a random factor within
+    the specified range, and then crops or pads it to maintain the original size.
     """
-    
-    def __init__(
-        self,
-        max_factor_x: float = 0.2,
-        max_factor_z: float = 0.2,
-        fill_value: Optional[float] = None
-    ):
+
+    def __init__(self, scale_range: Tuple[float, float] = (0.9, 1.1),
+                 rng: Optional[np.random.Generator] = None):
         """
-        Initialize the RandomStretch transformer.
-        
+        Initialize the RandomStretch transformation.
+
         Args:
-            max_factor_x: Maximum stretch factor in x direction
-            max_factor_z: Maximum stretch factor in z direction
-            fill_value: Value to fill empty areas after stretching (default: use edge values)
+            scale_range: Range of scaling factors (min, max)
+            rng: Random number generator
         """
-        self.max_factor_x = max_factor_x
-        self.max_factor_z = max_factor_z
-        self.fill_value = fill_value
-    # end def __init__
-    
+        self.scale_range = scale_range
+        self.rng = rng if rng is not None else np.random.default_rng()
+    # end __init__
+
     def __call__(self, model: np.ndarray) -> np.ndarray:
         """
         Apply random stretching to the model.
-        
+
         Args:
-            model: 2D numpy array representing the velocity model
-            
+            model: Input velocity model as a 2D array
+
         Returns:
-            Transformed velocity model
+            Stretched velocity model
         """
-        if not CV2_AVAILABLE:
-            raise ImportError("OpenCV (cv2) is required for RandomStretch. "
-                             "Install it with 'pip install opencv-python'.")
-        # end if
-        
-        # Generate random stretch factors
-        factor_x = 1.0 + np.random.uniform(-self.max_factor_x, self.max_factor_x)
-        factor_z = 1.0 + np.random.uniform(-self.max_factor_z, self.max_factor_z)
-        
-        # Get model dimensions
-        height, width = model.shape
-        
-        # Determine new dimensions
-        new_width = int(width * factor_x)
-        new_height = int(height * factor_z)
-        
-        # Determine border mode and value
-        if self.fill_value is None:
-            border_mode = cv2.BORDER_REPLICATE
-            border_value = 0
+        scale = self.rng.uniform(*self.scale_range)
+        stretched = zoom(model, scale, order=1)
+
+        # Crop or pad to return to original size
+        nz, nx = model.shape
+        sz, sx = stretched.shape
+
+        if sz >= nz and sx >= nx:
+            stretched = stretched[:nz, :nx]
         else:
-            border_mode = cv2.BORDER_CONSTANT
-            border_value = self.fill_value
+            padded = np.ones((nz, nx)) * np.mean(model)
+            padded[:min(sz, nz), :min(sx, nx)] = stretched[:min(sz, nz), :min(sx, nx)]
+            stretched = padded
         # end if
-        
-        # Apply stretching
-        stretched = cv2.resize(
-            model.astype(np.float32),
-            (new_width, new_height),
-            interpolation=cv2.INTER_LINEAR
-        )
-        
-        # Crop or pad to original size
-        if new_width > width:
-            # Crop horizontally
-            start_x = (new_width - width) // 2
-            stretched = stretched[:, start_x:start_x + width]
-        elif new_width < width:
-            # Pad horizontally
-            pad_x = (width - new_width) // 2
-            stretched = cv2.copyMakeBorder(
-                stretched,
-                0, 0, pad_x, width - new_width - pad_x,
-                borderType=border_mode,
-                value=border_value
-            )
-        # end if
-        
-        if new_height > height:
-            # Crop vertically
-            start_y = (new_height - height) // 2
-            stretched = stretched[start_y:start_y + height, :]
-        elif new_height < height:
-            # Pad vertically
-            pad_y = (height - new_height) // 2
-            stretched = cv2.copyMakeBorder(
-                stretched,
-                pad_y, height - new_height - pad_y, 0, 0,
-                borderType=border_mode,
-                value=border_value
-            )
-        # end if
-        
+
         return stretched
-    # end def __call__
-# end class RandomStretch
+    # end __call__
+
+# end RandomStretch
 
 
 class AddInclusion:
     """
-    Add random inclusion shapes to a velocity model.
-    
-    Attributes:
-        num_inclusions: Number of inclusions to add
-        min_radius: Minimum radius of inclusions
-        max_radius: Maximum radius of inclusions
-        min_velocity: Minimum velocity value for inclusions
-        max_velocity: Maximum velocity value for inclusions
+    Add random circular inclusions to a velocity model.
+
+    This transformation adds a random number of circular regions with different
+    velocities to the model, simulating geological inclusions.
     """
-    
+
     def __init__(
-        self,
-        num_inclusions: int = 3,
-        min_radius: int = 5,
-        max_radius: int = 15,
-        min_velocity: Optional[float] = None,
-        max_velocity: Optional[float] = None
-    ):
+            self,
+            radius_range: Tuple[int, int] = (3, 10),
+            velocity_range: Tuple[float, float] = (1000, 2500),
+            n_inclusions_range: Tuple[int, int] = (1, 5),
+            rng: Optional[np.random.Generator] = None):
         """
-        Initialize the AddInclusion transformer.
-        
+        Initialize the AddInclusion transformation.
+
         Args:
-            num_inclusions: Number of inclusions to add
-            min_radius: Minimum radius of inclusions
-            max_radius: Maximum radius of inclusions
-            min_velocity: Minimum velocity value for inclusions (default: model min)
-            max_velocity: Maximum velocity value for inclusions (default: model max)
+            radius_range: Range of inclusion radii (min, max)
+            velocity_range: Range of inclusion velocities (min, max)
+            n_inclusions_range: Range for number of inclusions to add (min, max)
+            rng: Random number generator
         """
-        self.num_inclusions = num_inclusions
-        self.min_radius = min_radius
-        self.max_radius = max_radius
-        self.min_velocity = min_velocity
-        self.max_velocity = max_velocity
-    # end def __init__
-    
+        self.radius_range = radius_range
+        self.velocity_range = velocity_range
+        self.rng = rng if rng is not None else np.random.default_rng()
+        self.n_inclusions_range = n_inclusions_range
+    # end __init__
+
     def __call__(self, model: np.ndarray) -> np.ndarray:
         """
         Add random inclusions to the model.
-        
+
         Args:
-            model: 2D numpy array representing the velocity model
-            
+            model: Input velocity model as a 2D array
+
         Returns:
-            Transformed velocity model
+            Velocity model with added inclusions
         """
-        if not CV2_AVAILABLE:
-            raise ImportError("OpenCV (cv2) is required for AddInclusion. "
-                             "Install it with 'pip install opencv-python'.")
-        # end if
-        
-        # Get model dimensions
-        height, width = model.shape
-        
-        # Determine velocity range for inclusions
-        min_vel = self.min_velocity if self.min_velocity is not None else np.min(model)
-        max_vel = self.max_velocity if self.max_velocity is not None else np.max(model)
-        
-        # Create a copy of the model
-        result = model.copy()
-        
-        # Add inclusions
-        for _ in range(self.num_inclusions):
-            # Random center position
-            center_x = np.random.randint(0, width)
-            center_y = np.random.randint(0, height)
-            
-            # Random radius
-            radius = np.random.randint(self.min_radius, self.max_radius + 1)
-            
-            # Random velocity
-            velocity = np.random.uniform(min_vel, max_vel)
-            
-            # Draw circle
-            cv2.circle(
-                result,
-                (center_x, center_y),
-                radius,
-                velocity,
-                -1  # Fill the circle
-            )
+        nz, nx = model.shape
+        n_inclusions = int(self.rng.uniform(*self.n_inclusions_range))
+        for _ in range(n_inclusions):
+            r = self.rng.integers(*self.radius_range)
+            cx = self.rng.integers(r, nx - r)
+            cz = self.rng.integers(r, nz - r)
+            vel = self.rng.uniform(*self.velocity_range)
+            yy, xx = np.ogrid[:nz, :nx]
+            mask = (xx - cx)**2 + (yy - cz)**2 <= r**2
+            model[mask] = vel
         # end for
-        
-        return result
-    # end def __call__
-# end class AddInclusion
+        return model
+    # end __call__
+
+# end AddInclusion
 
 
 class AddPerlinNoise:
     """
     Add Perlin noise to a velocity model.
-    
-    Attributes:
-        amplitude: Maximum amplitude of the noise relative to model range
-        scale: Scale of the Perlin noise
-        octaves: Number of octaves for Perlin noise
+
+    This transformation adds coherent noise based on Perlin noise algorithm
+    to the velocity model, creating natural-looking variations.
     """
-    
-    def __init__(self, amplitude: float = 0.1, scale: float = 10.0, octaves: int = 4):
+
+    def __init__(
+            self,
+            scale_range: Tuple[float, float],
+            amplitude: float,
+            n_levels: List[float],
+            rng: Optional[np.random.Generator] = None):
         """
-        Initialize the AddPerlinNoise transformer.
-        
+        Initialize the AddPerlinNoise transformation.
+
         Args:
-            amplitude: Maximum amplitude of the noise relative to model range
-            scale: Scale of the Perlin noise
-            octaves: Number of octaves for Perlin noise
+            scale_range: Range for noise scale (min, max)
+            amplitude: Amplitude of the noise
+            n_levels: Discretization levels for the noise
+            rng: Random number generator
         """
+        self.rng = rng or np.random.default_rng()
+        self.scale_range = scale_range
+        self.n_levels = np.array(n_levels)
         self.amplitude = amplitude
-        self.scale = scale
-        self.octaves = octaves
-    # end def __init__
-    
+    # end __init__
+
     def __call__(self, model: np.ndarray) -> np.ndarray:
         """
         Add Perlin noise to the model.
-        
+
         Args:
-            model: 2D numpy array representing the velocity model
-            
+            model: Input velocity model as a 2D array
+
         Returns:
-            Transformed velocity model
+            Velocity model with added Perlin noise
         """
-        try:
-            from noise import pnoise2
-        except ImportError:
-            raise ImportError("The 'noise' package is required for Perlin noise. "
-                             "Install it with 'pip install noise'.")
-        # end if
-        
-        # Get model dimensions
-        height, width = model.shape
-        
-        # Calculate model range for scaling noise
-        model_min = np.min(model)
-        model_max = np.max(model)
-        model_range = model_max - model_min
-        
-        # Generate Perlin noise
-        noise = np.zeros_like(model)
-        for i in range(height):
-            for j in range(width):
-                noise[i, j] = pnoise2(
-                    i / self.scale,
-                    j / self.scale,
-                    octaves=self.octaves,
-                    persistence=0.5,
-                    lacunarity=2.0,
-                    repeatx=width,
-                    repeaty=height,
-                    base=0
-                )
-            # end for
-        # end for
-        
-        # Normalize noise to [-1, 1]
-        noise = 2.0 * (noise - np.min(noise)) / (np.max(noise) - np.min(noise)) - 1.0
-        
-        # Scale noise by amplitude and model range
-        scaled_noise = noise * self.amplitude * model_range
-        
-        # Add noise to model
-        result = model + scaled_noise
-        
-        # Ensure result is within original range
-        result = np.clip(result, model_min, model_max)
-        
-        return result
-    # end def __call__
-# end class AddPerlinNoise
+        scale = int(self.rng.uniform(*self.scale_range))
 
+        nz, nx = model.shape
 
-class AddCrossLine:
-    """
-    Add random cross-cutting lines to a velocity model.
-    
-    Attributes:
-        num_lines: Number of lines to add
-        min_width: Minimum width of lines
-        max_width: Maximum width of lines
-        min_velocity: Minimum velocity value for lines
-        max_velocity: Maximum velocity value for lines
-    """
-    
-    def __init__(
-        self,
-        num_lines: int = 2,
-        min_width: int = 1,
-        max_width: int = 5,
-        min_velocity: Optional[float] = None,
-        max_velocity: Optional[float] = None
-    ):
-        """
-        Initialize the AddCrossLine transformer.
-        
-        Args:
-            num_lines: Number of lines to add
-            min_width: Minimum width of lines
-            max_width: Maximum width of lines
-            min_velocity: Minimum velocity value for lines (default: model min)
-            max_velocity: Maximum velocity value for lines (default: model max)
-        """
-        self.num_lines = num_lines
-        self.min_width = min_width
-        self.max_width = max_width
-        self.min_velocity = min_velocity
-        self.max_velocity = max_velocity
-    # end def __init__
-    
-    def __call__(self, model: np.ndarray) -> np.ndarray:
-        """
-        Add random cross-cutting lines to the model.
-        
-        Args:
-            model: 2D numpy array representing the velocity model
-            
-        Returns:
-            Transformed velocity model
-        """
-        if not CV2_AVAILABLE:
-            raise ImportError("OpenCV (cv2) is required for AddCrossLine. "
-                             "Install it with 'pip install opencv-python'.")
-        # end if
-        
-        # Get model dimensions
-        height, width = model.shape
-        
-        # Determine velocity range for lines
-        min_vel = self.min_velocity if self.min_velocity is not None else np.min(model)
-        max_vel = self.max_velocity if self.max_velocity is not None else np.max(model)
-        
-        # Create a copy of the model
-        result = model.copy()
-        
-        # Add lines
-        for _ in range(self.num_lines):
-            # Random start and end points
-            start_x = np.random.randint(0, width)
-            start_y = np.random.randint(0, height)
-            end_x = np.random.randint(0, width)
-            end_y = np.random.randint(0, height)
-            
-            # Random width
-            line_width = np.random.randint(self.min_width, self.max_width + 1)
-            
-            # Random velocity
-            velocity = np.random.uniform(min_vel, max_vel)
-            
-            # Draw line
-            cv2.line(
-                result,
-                (start_x, start_y),
-                (end_x, end_y),
-                velocity,
-                line_width
-            )
-        # end for
-        
-        return result
-    # end def __call__
-# end class AddCrossLine
-
-
-class RandomSwirl:
-    """
-    Apply random swirl effect to a velocity model.
-    
-    Attributes:
-        max_strength: Maximum strength of the swirl effect
-        radius: Radius of the swirl effect
-    """
-    
-    def __init__(self, max_strength: float = 10.0, radius: Optional[int] = None):
-        """
-        Initialize the RandomSwirl transformer.
-        
-        Args:
-            max_strength: Maximum strength of the swirl effect
-            radius: Radius of the swirl effect (default: half of min dimension)
-        """
-        self.max_strength = max_strength
-        self.radius = radius
-    # end def __init__
-    
-    def __call__(self, model: np.ndarray) -> np.ndarray:
-        """
-        Apply random swirl effect to the model.
-        
-        Args:
-            model: 2D numpy array representing the velocity model
-            
-        Returns:
-            Transformed velocity model
-        """
-        try:
-            from skimage.transform import swirl
-        except ImportError:
-            raise ImportError("scikit-image is required for RandomSwirl. "
-                             "Install it with 'pip install scikit-image'.")
-        # end if
-        
-        # Get model dimensions
-        height, width = model.shape
-        
-        # Determine radius if not provided
-        radius = self.radius if self.radius is not None else min(height, width) // 2
-        
-        # Random strength
-        strength = np.random.uniform(-self.max_strength, self.max_strength)
-        
-        # Random center
-        center = (
-            np.random.randint(radius, width - radius) if width > 2 * radius else width // 2,
-            np.random.randint(radius, height - radius) if height > 2 * radius else height // 2
+        # Resolution derived from global scale
+        res = (
+            max(1, int(nz / scale)),
+            max(1, int(nx / scale))
         )
-        
-        # Apply swirl
-        result = swirl(
-            model,
-            center=center,
-            strength=strength,
-            radius=radius,
-            mode='reflect'
-        )
-        
-        return result
-    # end def __call__
-# end class RandomSwirl
+
+        noise = generate_perlin_noise_2d(model.shape, res=res, rng=self.rng) * 10.0
+        noise = np.vectorize(lambda n: self.n_levels[np.argmin(np.abs(self.n_levels - n))])(noise)
+
+        return model + self.amplitude * noise
+    # end __call__
+
+# end AddPerlinNoise
 
 
-class RandomPiecewiseAffine:
-    """
-    Apply random piecewise affine transformation to a velocity model.
-    
-    Attributes:
-        num_points: Number of control points in each dimension
-        max_displacement: Maximum displacement of control points
-    """
-    
-    def __init__(self, num_points: int = 4, max_displacement: float = 0.1):
-        """
-        Initialize the RandomPiecewiseAffine transformer.
-        
-        Args:
-            num_points: Number of control points in each dimension
-            max_displacement: Maximum displacement of control points as fraction of image size
-        """
-        self.num_points = num_points
-        self.max_displacement = max_displacement
-    # end def __init__
-    
-    def __call__(self, model: np.ndarray) -> np.ndarray:
-        """
-        Apply random piecewise affine transformation to the model.
-        
-        Args:
-            model: 2D numpy array representing the velocity model
-            
-        Returns:
-            Transformed velocity model
-        """
-        try:
-            from skimage.transform import PiecewiseAffineTransform, warp
-        except ImportError:
-            raise ImportError("scikit-image is required for RandomPiecewiseAffine. "
-                             "Install it with 'pip install scikit-image'.")
-        # end if
-        
-        # Get model dimensions
-        height, width = model.shape
-        
-        # Create grid of control points
-        rows = np.linspace(0, height - 1, self.num_points)
-        cols = np.linspace(0, width - 1, self.num_points)
-        src_rows, src_cols = np.meshgrid(rows, cols, indexing='ij')
-        src = np.dstack([src_cols.flat, src_rows.flat])[0]
-        
-        # Create destination control points with random displacements
-        dst_rows = src_rows + np.random.uniform(
-            -self.max_displacement * height,
-            self.max_displacement * height,
-            src_rows.shape
-        )
-        dst_cols = src_cols + np.random.uniform(
-            -self.max_displacement * width,
-            self.max_displacement * width,
-            src_cols.shape
-        )
-        dst = np.dstack([dst_cols.flat, dst_rows.flat])[0]
-        
-        # Create transformation
-        transform = PiecewiseAffineTransform()
-        transform.estimate(src, dst)
-        
-        # Apply transformation
-        result = warp(model, transform, mode='reflect')
-        
-        # Rescale to original range
-        result = result * (np.max(model) - np.min(model)) + np.min(model)
-        
-        return result
-    # end def __call__
-# end class RandomPiecewiseAffine
+# endregion TRANSFORMS
 
-
-class RandomDisplacementField:
-    """
-    Apply random displacement field to a velocity model.
-    
-    Attributes:
-        alpha: Maximum displacement as fraction of image size
-        sigma: Standard deviation of the Gaussian filter
-    """
-    
-    def __init__(self, alpha: float = 0.1, sigma: float = 4.0):
-        """
-        Initialize the RandomDisplacementField transformer.
-        
-        Args:
-            alpha: Maximum displacement as fraction of image size
-            sigma: Standard deviation of the Gaussian filter
-        """
-        self.alpha = alpha
-        self.sigma = sigma
-    # end def __init__
-    
-    def __call__(self, model: np.ndarray) -> np.ndarray:
-        """
-        Apply random displacement field to the model.
-        
-        Args:
-            model: 2D numpy array representing the velocity model
-            
-        Returns:
-            Transformed velocity model
-        """
-        try:
-            from scipy.ndimage import gaussian_filter
-            from skimage.transform import warp
-        except ImportError:
-            raise ImportError("scipy and scikit-image are required for RandomDisplacementField. "
-                             "Install them with 'pip install scipy scikit-image'.")
-        # end if
-        
-        # Get model dimensions
-        height, width = model.shape
-        
-        # Create random displacement fields
-        dx = gaussian_filter(
-            (np.random.rand(height, width) * 2 - 1),
-            self.sigma, mode="constant", cval=0
-        ) * self.alpha * width
-        dy = gaussian_filter(
-            (np.random.rand(height, width) * 2 - 1),
-            self.sigma, mode="constant", cval=0
-        ) * self.alpha * height
-        
-        # Create coordinate grid
-        y, x = np.meshgrid(np.arange(height), np.arange(width), indexing='ij')
-        
-        # Displace coordinates
-        coordinates = np.stack([y + dy, x + dx], axis=0)
-        
-        # Apply transformation
-        result = warp(model, coordinates, mode='reflect')
-        
-        # Rescale to original range
-        result = result * (np.max(model) - np.min(model)) + np.min(model)
-        
-        return result
-    # end def __call__
-# end class RandomDisplacementField
-
-
-def apply_random_transformations(
-    model: np.ndarray,
-    transformations: List[Callable[[np.ndarray], np.ndarray]],
-    num_transforms: int = 2
-) -> np.ndarray:
-    """
-    Apply a random subset of transformations to a velocity model.
-    
-    Args:
-        model: 2D numpy array representing the velocity model
-        transformations: List of transformation callables
-        num_transforms: Number of transformations to apply
-        
-    Returns:
-        Transformed velocity model
-    """
-    # Create a copy of the model
-    result = model.copy()
-    
-    # Randomly select transformations
-    if num_transforms > len(transformations):
-        num_transforms = len(transformations)
-    # end if
-    
-    selected_transforms = np.random.choice(
-        transformations,
-        size=num_transforms,
-        replace=False
-    )
-    
-    # Apply selected transformations
-    for transform in selected_transforms:
-        result = transform(result)
-    # end for
-    
-    return result
-# end def apply_random_transformations
-
-
-class RandomTransformer:
-    """
-    Apply random transformations to velocity models.
-    
-    This class provides a convenient way to apply multiple random transformations
-    to velocity models with configurable probabilities.
-    
-    Attributes:
-        transformations: Dictionary mapping transformation classes to their probabilities
-        max_transforms: Maximum number of transformations to apply
-    """
-    
-    def __init__(
-        self,
-        transformations: Dict[Callable[[np.ndarray], np.ndarray], float],
-        max_transforms: int = 3
-    ):
-        """
-        Initialize the RandomTransformer.
-        
-        Args:
-            transformations: Dictionary mapping transformation classes to their probabilities
-            max_transforms: Maximum number of transformations to apply
-        """
-        self.transformations = transformations
-        self.max_transforms = max_transforms
-    # end def __init__
-    
-    def __call__(self, model: np.ndarray) -> np.ndarray:
-        """
-        Apply random transformations to the model.
-        
-        Args:
-            model: 2D numpy array representing the velocity model
-            
-        Returns:
-            Transformed velocity model
-        """
-        # Create a copy of the model
-        result = model.copy()
-        
-        # Determine which transformations to apply
-        transforms_to_apply = []
-        for transform, probability in self.transformations.items():
-            if np.random.random() < probability:
-                transforms_to_apply.append(transform)
-            # end if
-        # end for
-        
-        # Limit number of transformations
-        if len(transforms_to_apply) > self.max_transforms:
-            transforms_to_apply = np.random.choice(
-                transforms_to_apply,
-                size=self.max_transforms,
-                replace=False
-            )
-        # end if
-        
-        # Apply transformations
-        for transform in transforms_to_apply:
-            result = transform(result)
-        # end for
-        
-        return result
-    # end def __call__
-# end class RandomTransformer
-
-
-def crop_and_resize(
-    model: np.ndarray,
-    crop_size: Tuple[int, int],
-    output_size: Optional[Tuple[int, int]] = None
-) -> np.ndarray:
-    """
-    Crop a random region from a velocity model and resize it.
-    
-    Args:
-        model: 2D numpy array representing the velocity model
-        crop_size: Size of the region to crop (height, width)
-        output_size: Size to resize the cropped region to (default: original model size)
-        
-    Returns:
-        Transformed velocity model
-    """
-    if not CV2_AVAILABLE:
-        raise ImportError("OpenCV (cv2) is required for crop_and_resize. "
-                         "Install it with 'pip install opencv-python'.")
-    # end if
-    
-    # Get model dimensions
-    height, width = model.shape
-    crop_height, crop_width = crop_size
-    
-    # Ensure crop size is not larger than model
-    crop_height = min(crop_height, height)
-    crop_width = min(crop_width, width)
-    
-    # Random crop position
-    top = np.random.randint(0, height - crop_height + 1)
-    left = np.random.randint(0, width - crop_width + 1)
-    
-    # Crop the model
-    cropped = model[top:top + crop_height, left:left + crop_width]
-    
-    # Resize if output_size is provided
-    if output_size is not None:
-        resized = cv2.resize(
-            cropped.astype(np.float32),
-            (output_size[1], output_size[0]),
-            interpolation=cv2.INTER_LINEAR
-        )
-        return resized
-    # end if
-    
-    return cropped
-# end def crop_and_resize
-
-
-# Additional transformations for convenience
-class RandomStretchZoom:
-    """Alias for RandomStretch with different default parameters."""
-    def __init__(self, max_factor: float = 0.2, fill_value: Optional[float] = None):
-        self.transformer = RandomStretch(max_factor, max_factor, fill_value)
-    # end def __init__
-    
-    def __call__(self, model: np.ndarray) -> np.ndarray:
-        return self.transformer(model)
-    # end def __call__
-# end class RandomStretchZoom
-
-
-class RandomDisplacement:
-    """Alias for RandomDisplacementField with different default parameters."""
-    def __init__(self, strength: float = 0.05):
-        self.transformer = RandomDisplacementField(alpha=strength)
-    # end def __init__
-    
-    def __call__(self, model: np.ndarray) -> np.ndarray:
-        return self.transformer(model)
-    # end def __call__
-# end class RandomDisplacement
-
-
-class RandomNoise:
-    """Add random Gaussian noise to a velocity model."""
-    def __init__(self, std: float = 0.05):
-        self.std = std
-    # end def __init__
-    
-    def __call__(self, model: np.ndarray) -> np.ndarray:
-        noise = np.random.normal(0, self.std * (np.max(model) - np.min(model)), model.shape)
-        result = model + noise
-        return np.clip(result, np.min(model), np.max(model))
-    # end def __call__
-# end class RandomNoise
-
-
-class RandomGaussianBlur:
-    """Apply random Gaussian blur to a velocity model."""
-    def __init__(self, max_sigma: float = 2.0):
-        self.max_sigma = max_sigma
-    # end def __init__
-    
-    def __call__(self, model: np.ndarray) -> np.ndarray:
-        try:
-            from scipy.ndimage import gaussian_filter
-        except ImportError:
-            raise ImportError("scipy is required for RandomGaussianBlur. "
-                             "Install it with 'pip install scipy'.")
-        # end if
-        
-        sigma = np.random.uniform(0, self.max_sigma)
-        return gaussian_filter(model, sigma=sigma)
-    # end def __call__
-# end class RandomGaussianBlur
-
-
-class RandomBrightnessContrast:
-    """Apply random brightness and contrast adjustments to a velocity model."""
-    def __init__(self, brightness: float = 0.1, contrast: float = 0.1):
-        self.brightness = brightness
-        self.contrast = contrast
-    # end def __init__
-    
-    def __call__(self, model: np.ndarray) -> np.ndarray:
-        # Normalize to [0, 1]
-        model_min = np.min(model)
-        model_max = np.max(model)
-        model_range = model_max - model_min
-        normalized = (model - model_min) / model_range
-        
-        # Apply brightness adjustment
-        brightness_factor = 1.0 + np.random.uniform(-self.brightness, self.brightness)
-        adjusted = normalized * brightness_factor
-        
-        # Apply contrast adjustment
-        contrast_factor = 1.0 + np.random.uniform(-self.contrast, self.contrast)
-        mean = np.mean(adjusted)
-        adjusted = (adjusted - mean) * contrast_factor + mean
-        
-        # Clip to [0, 1] and rescale to original range
-        adjusted = np.clip(adjusted, 0, 1)
-        result = adjusted * model_range + model_min
-        
-        return result
-    # end def __call__
-# end class RandomBrightnessContrast

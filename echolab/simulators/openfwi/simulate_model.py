@@ -27,7 +27,7 @@ from echolab.modeling import (
     ricker,
     VelocityModel2D
 )
-from echolab.modeling.velocity_models import load_velocity_models, load_velocity_model
+from echolab.modeling.velocity import load_velocity_models, load_velocity_model
 
 
 console = Console()

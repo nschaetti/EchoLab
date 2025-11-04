@@ -16,6 +16,9 @@ import numpy as np
 import yaml
 from rich.console import Console
 from rich.table import Table
+from rich.traceback import install
+
+
 from echolab.simulators.openanfwi.wave import (
     plot_velocity,
     plot_multiple_velocity_models,
@@ -29,13 +32,12 @@ from echolab.simulators.openfwi.simulate_model import (
     plot_openfwi_results,
     run_openfwi_simulation,
 )
-from echolab.modeling import generate_models as synthesize_velocity_models
-from echolab.modeling.velocity_map import Dimensionality, save_velocity_maps
 from echolab.cli_commands.generate_models_cli import generate_models
 from echolab.cli_wavelets import wavelets
 
 # Shared rich console instance to keep styling consistent across commands.
 console = Console()
+install(show_locals=False)
 
 
 class ClickBaseException(click.ClickException):
@@ -51,7 +53,6 @@ class ClickBaseException(click.ClickException):
     def __init__(self, exc: Exception):
         super().__init__(str(exc))
     # end def __init__
-
 # end class ClickBaseException
 
 
@@ -375,6 +376,12 @@ def openfwi(
     help="Destination ``.npy`` file where the generated models will be stored.",
 )
 @click.option(
+    "--n-models",
+    type=int,
+    required=True,
+    help="Number of models to generate.",
+)
+@click.option(
     "--seed",
     type=int,
     default=None,
@@ -391,20 +398,13 @@ def openfwi(
     is_flag=True,
     help="Display validation messages for discarded models.",
 )
-@click.option(
-    "--dim",
-    type=click.Choice(["1D", "2D", "3D"]),
-    default="2D",
-    show_default=True,
-    help="Dimensionality of the velocity models to generate.",
-)
 def generate_models_cli(
-    config_path: Path,
-    output_path: Path,
-    seed: Optional[int],
-    overwrite: bool,
-    verbose: bool,
-    dim: str,
+        config_path: Path,
+        output_path: Path,
+        n_models: int,
+        seed: Optional[int],
+        overwrite: bool,
+        verbose: bool,
 ) -> None:
     """
     Generate a library of velocity models using the shared echolab synthesiser.
@@ -414,20 +414,20 @@ def generate_models_cli(
     Args:
         config_path: Path to the YAML configuration file
         output_path: Path to save the generated models
+        n_models: Number of models to generate.
         seed: Optional random seed to override the one in configuration
         overwrite: Whether to overwrite existing output file
         verbose: Whether to display validation messages for discarded models
-        dim: Dimensionality of the velocity models to generate (1D, 2D, 3D)
     """
     try:
         # Call the implementation in the dedicated module
         generate_models(
             config_path=config_path,
             output_path=output_path,
+            n_models=n_models,
             seed=seed,
             overwrite=overwrite,
             verbose=verbose,
-            dim=dim
         )
     except (FileNotFoundError, FileExistsError, ValueError, yaml.YAMLError) as exc:
         raise ClickBaseException(exc) from exc

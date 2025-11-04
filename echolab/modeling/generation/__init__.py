@@ -8,7 +8,7 @@ It also includes data augmentation utilities for transforming models.
 
 # Export from generate_models
 from .generate_models import (
-    generate_models,
+    synthesize_velocity_models,
     save_and_plot,
 ) # end from generate_models
 
@@ -34,37 +34,11 @@ from .data_augmentation import (
     apply_random_transformations,
     RandomTransformer,
     crop_and_resize,
-    RandomStretchZoom,
-    RandomDisplacement,
-    RandomNoise,
-    RandomGaussianBlur,
-    RandomBrightnessContrast,
 ) # end from data_augmentation
-
-# Export from model_generation_config
-from .model_generation_config import (
-    ModelGenerationConfig,
-    ValidationConfig,
-    GridConfig,
-    LayeredModelParams,
-    FaultModelParams,
-    DomeModelParams,
-    PerlinModelParams,
-    ModelParams,
-    RotateTransformParams,
-    StretchTransformParams,
-    InclusionTransformParams,
-    PerlinNoiseTransformParams,
-    CrosslineTransformParams,
-    SwirlTransformParams,
-    PiecewiseAffineTransformParams,
-    DisplacementFieldTransformParams,
-    TransformParams,
-) # end from model_generation_config
 
 __all__ = [
     # From generate_models
-    "generate_models",
+    "synthesize_velocity_models",
     "save_and_plot",
     
     # From layer_generation
@@ -86,28 +60,4 @@ __all__ = [
     "apply_random_transformations",
     "RandomTransformer",
     "crop_and_resize",
-    "RandomStretchZoom",
-    "RandomDisplacement",
-    "RandomNoise",
-    "RandomGaussianBlur",
-    "RandomBrightnessContrast",
-    
-    # From model_generation_config
-    "ModelGenerationConfig",
-    "ValidationConfig",
-    "GridConfig",
-    "LayeredModelParams",
-    "FaultModelParams",
-    "DomeModelParams",
-    "PerlinModelParams",
-    "ModelParams",
-    "RotateTransformParams",
-    "StretchTransformParams",
-    "InclusionTransformParams",
-    "PerlinNoiseTransformParams",
-    "CrosslineTransformParams",
-    "SwirlTransformParams",
-    "PiecewiseAffineTransformParams",
-    "DisplacementFieldTransformParams",
-    "TransformParams",
 ] # end __all__

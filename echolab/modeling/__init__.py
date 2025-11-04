@@ -2,7 +2,7 @@
 
 # Import from generation subpackage
 from .generation import (
-    generate_models,
+    synthesize_velocity_models,
     layered_model,
     random_fault_model,
     dome_model,
@@ -21,29 +21,28 @@ from .generation import (
     RandomTransformer,
 )
 
-from .validation import entropy_score, is_valid_model
+from .validation import entropy_score, is_valid_velmap
 from .wavelets import ricker
 
 # Import from velocity modules
-from .velocity_map import (
+from .velocity import (
     Dimensionality,
     VelocityMap,
-    save_velocity_maps,
-    load_velocity_maps,
-) # end from velocity_map
-
-from .velocity_model import (
     VelocityModel,
     VelocityModel1D,
     VelocityModel2D,
     VelocityModel3D,
+    VelocityModelBase,
     load_velocity_model,
-) # end from velocity_model
-
-from .velocity_models import (
-    save_velocity_models,
     load_velocity_models,
-) # end from velocity_models
+    save_velocity_models,
+    save_velocity_maps,
+    load_velocity_maps,
+    create_velocity_model,
+    as_map,
+    is_velocity_model,
+    open_models,
+) # end from velocity
 
 # Import acoustic field simulation classes
 from .acoustic_field import (
@@ -71,7 +70,7 @@ from .simulator import (
 
 __all__ = [
     # Velocity model generation
-    "generate_models",
+    "synthesize_velocity_models",
     "layered_model",
     "random_fault_model",
     "dome_model",
@@ -86,6 +85,10 @@ __all__ = [
     "load_velocity_maps",
     "save_velocity_models",
     "load_velocity_models",
+    "open_models",
+    "create_velocity_model",
+    "as_map",
+    "is_velocity_model",
     
     # Data augmentation
     "RandomRotation",
@@ -101,7 +104,7 @@ __all__ = [
     
     # Validation
     "entropy_score",
-    "is_valid_model",
+    "is_valid_velmap",
     
     # Wavelets
     "ricker",
@@ -126,9 +129,9 @@ __all__ = [
     
     # Velocity models
     "VelocityModel",
+    "VelocityModelBase",
     "VelocityModel1D",
     "VelocityModel2D",
     "VelocityModel3D",
     "load_velocity_model",
 ]
-

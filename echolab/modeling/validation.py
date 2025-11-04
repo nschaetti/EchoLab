@@ -32,8 +32,8 @@ def entropy_score(model: np.ndarray, n_bins: int = 64) -> float:
 # end def entropy_score
 
 
-def is_valid_model(
-    model: np.ndarray,
+def is_valid_velmap(
+    velmap: np.ndarray,
     min_v: float = 1000,
     max_v: float = 5000,
     zero_thresh: float = 0.01,
@@ -52,7 +52,7 @@ def is_valid_model(
     - Have sufficient entropy (variability)
     
     Args:
-        model: Velocity model as a numpy array
+        velmap: Velocity model as a numpy array
         min_v: Minimum allowed velocity value
         max_v: Maximum allowed velocity value
         zero_thresh: Maximum allowed fraction of near-zero values
@@ -63,27 +63,27 @@ def is_valid_model(
     Returns:
         True if the model is valid, False otherwise
     """
-    if not np.all((model >= min_v) & (model <= max_v)):
+    if not np.all((velmap >= min_v) & (velmap <= max_v)):
         if verbose:
             print(f"[!] Values outside range [{min_v}, {max_v}]")
         return False
     # end if
 
-    if np.isnan(model).any() or np.isinf(model).any():
+    if np.isnan(velmap).any() or np.isinf(velmap).any():
         if verbose:
             print("[!] NaN or Inf detected")
         return False
     # end if
 
-    zero_ratio = np.mean(model < 1e-3)
+    zero_ratio = np.mean(velmap < 1e-3)
     if zero_ratio > zero_thresh:
         if verbose:
             print(f"[!] {zero_ratio * 100:.2f}% of values ≈ 0")
         return False
     # end if
 
-    values, counts = np.unique(model, return_counts=True)
-    ratios = counts / model.size
+    values, counts = np.unique(velmap, return_counts=True)
+    ratios = counts / velmap.size
     max_ratio = np.max(ratios)
     if max_ratio > unique_thresh:
         if verbose:
@@ -94,7 +94,7 @@ def is_valid_model(
         return False
     # end if
 
-    entropy_value = entropy_score(model)
+    entropy_value = entropy_score(velmap)
     if entropy_value < entropy_thresh:
         if verbose:
             print(f"[!] Entropy too low: H = {entropy_value:.2f}")

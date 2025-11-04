@@ -13,15 +13,19 @@ import yaml
 from rich.console import Console
 from rich.table import Table
 
-from echolab.modeling import generate_models as synthesize_velocity_models
-from echolab.modeling.velocity import Dimensionality, save_velocity_models
-from echolab.modeling.generation import ModelGenerationConfig
+from echolab.modeling import synthesize_velocity_models
+from echolab.modeling.velocity import (
+    Dimensionality,
+    save_velocity_models,
+    create_velocity_model,
+)
+
 
 # Create console for rich output
 console = Console()
 
 
-def _load_generation_config(config_path: Path) -> ModelGenerationConfig:
+def _load_generation_config(config_path: Path) -> Dict:
     """
     Load model generation configuration from a YAML file.
     
@@ -37,9 +41,14 @@ def _load_generation_config(config_path: Path) -> ModelGenerationConfig:
         ValueError: If the configuration is invalid
     """
     try:
-        return ModelGenerationConfig.from_yaml(config_path)
+        # Load yaml file
+        with open(config_path, "r") as config_file:
+            config = yaml.load(config_file, Loader=yaml.FullLoader)
+        # end with
+        return config
     except (FileNotFoundError, yaml.YAMLError) as exc:
         raise exc
+    # end try
 # end def _load_generation_config
 
 
@@ -72,9 +81,11 @@ def _coerce_probability_map(
             probability = float(values_map.get(name, 0.0))
         except (TypeError, ValueError) as exc:
             raise ValueError(f"{label.capitalize()} probability for '{name}' must be numeric.") from exc
+        # end try
         
         if probability < 0.0:
             raise ValueError(f"{label.capitalize()} probability for '{name}' must be non-negative.")
+        # end if
         
         result[name] = probability
     # end for
@@ -84,6 +95,7 @@ def _coerce_probability_map(
         total = sum(result.values())
         if total <= 0.0:
             raise ValueError(f"At least one {label} must have a positive probability.")
+        # end if
         
         for name in result:
             result[name] /= total
@@ -180,15 +192,13 @@ def _extract_model_parameters(
 
 def _extract_grid_parameters(
     config: ModelGenerationConfig,
-    global_model_settings: Dict[str, Any]
 ) -> Tuple[int, int, float, float, Optional[int], Optional[float]]:
     """
     Extract grid parameters from configuration.
     
     Args:
         config: ModelGenerationConfig object
-        global_model_settings: Dictionary of global model settings
-        
+
     Returns:
         Tuple containing nx, nz, dx, dz, ny, dy parameters
     """
@@ -199,8 +209,8 @@ def _extract_grid_parameters(
     dz = config.model_params.dz
     
     # For 3D models, get ny and dy parameters
-    ny = config.model_params.ny if config.dimensionality == "3D" else None
-    dy = config.model_params.dy if config.dimensionality == "3D" else None
+    ny = config.model_params.ny if config.ndim == 3 else None
+    dy = config.model_params.dy if config.ndim == 3 else None
     
     return nx, nz, dx, dz, ny, dy
 # end def _extract_grid_parameters
@@ -208,15 +218,13 @@ def _extract_grid_parameters(
 
 def _extract_validation_parameters(
     config: ModelGenerationConfig,
-    global_model_settings: Dict[str, Any]
 ) -> Tuple[float, float, float, float, float]:
     """
     Extract validation parameters from configuration.
     
     Args:
         config: ModelGenerationConfig object
-        global_model_settings: Dictionary of global model settings
-        
+
     Returns:
         Tuple containing min_velocity, max_velocity, unique_thresh, entropy_thresh, zero_thresh
     """
@@ -226,50 +234,8 @@ def _extract_validation_parameters(
     unique_thresh = config.validation.unique_thresh
     entropy_thresh = config.validation.entropy_thresh
     zero_thresh = config.validation.zero_thresh
-    
     return min_velocity, max_velocity, unique_thresh, entropy_thresh, zero_thresh
 # end def _extract_validation_parameters
-
-
-def _extract_model_blur_sigma(
-    config: ModelGenerationConfig,
-    global_model_settings: Dict[str, Any],
-    per_model_settings: Dict[str, Dict[str, Any]]
-) -> float:
-    """
-    Extract model blur sigma parameter from configuration.
-    
-    Args:
-        config: ModelGenerationConfig object
-        global_model_settings: Dictionary of global model settings
-        per_model_settings: Dictionary of per-model settings
-        
-    Returns:
-        Model blur sigma value
-    """
-    # Get model_blur_sigma directly from config
-    model_blur_sigma = config.model_blur_sigma
-    
-    # If it's 0, try to get from global_model_settings
-    if model_blur_sigma == 0.0 and "sigma" in global_model_settings:
-        model_blur_sigma = float(global_model_settings["sigma"])
-    
-    # If still 0, try to find in per_model_settings
-    if model_blur_sigma == 0.0:
-        for params in per_model_settings.values():
-            if isinstance(params, dict) and "sigma" in params:
-                try:
-                    model_blur_sigma = float(params["sigma"])
-                    break
-                except (TypeError, ValueError):
-                    continue
-                # end try
-            # end if
-        # end for
-    # end if
-    
-    return model_blur_sigma
-# end def _extract_model_blur_sigma
 
 
 def _extract_model_types_and_probabilities(
@@ -301,43 +267,6 @@ def _extract_model_types_and_probabilities(
     
     return model_types, model_probs
 # end def _extract_model_types_and_probabilities
-
-
-def _sanitize_model_parameters(
-    model_types: List[str],
-    per_model_settings: Dict[str, Dict[str, Any]]
-) -> Dict[str, Dict[str, Any]]:
-    """
-    Sanitize model parameters for each model type.
-    
-    Args:
-        model_types: List of model types
-        per_model_settings: Dictionary of per-model settings
-        
-    Returns:
-        Dictionary of sanitized model parameters
-        
-    Raises:
-        ValueError: If parameters for a model are not a mapping
-    """
-    sanitised_model_params: Dict[str, Dict[str, Any]] = {}
-    for name in model_types:
-        params = per_model_settings.get(name, {})
-        if params is None:
-            params = {}
-        # end if
-        
-        if not isinstance(params, dict):
-            raise ValueError(f"Parameters for model '{name}' must be a mapping.")
-        # end if
-        
-        params_copy = dict(params)
-        params_copy.pop("sigma", None)
-        sanitised_model_params[name] = params_copy
-    # end for
-    
-    return sanitised_model_params
-# end def _sanitize_model_parameters
 
 
 def _extract_transform_types_and_probabilities(
@@ -459,12 +388,12 @@ def _display_results_table(
 
 
 def generate_models(
-    config_path: Path,
-    output_path: Path,
-    seed: Optional[int] = None,
-    overwrite: bool = False,
-    verbose: bool = False,
-    dim: Optional[str] = None
+        config_path: Path,
+        output_path: Path,
+        n_models: int,
+        seed: Optional[int] = None,
+        overwrite: bool = False,
+        verbose: bool = False,
 ) -> None:
     """
     Generate synthetic velocity models and save them to a file.
@@ -475,10 +404,10 @@ def generate_models(
     Args:
         config_path: Path to the YAML configuration file
         output_path: Path to save the generated models
+        n_models: Number of generated models
         seed: Optional random seed to override the one in configuration
         overwrite: Whether to overwrite existing output file
         verbose: Whether to display validation messages for discarded models
-        dim: Optional dimensionality override (1D, 2D, 3D)
         
     Raises:
         FileNotFoundError: If the configuration file doesn't exist
@@ -495,102 +424,48 @@ def generate_models(
                 f"Output file '{output_path}' already exists. Use --overwrite to replace it."
             )
         # end if
-
-        # Override dimensionality if specified
-        if dim:
-            config._config["dimensionality"] = dim
-        # end if
-
-        # Extract model parameters
-        global_model_settings, per_model_settings = _extract_model_parameters(
-            config=config
-        )
-
-        # Extract grid parameters
-        nx, nz, dx, dz, ny, dy = _extract_grid_parameters(config, global_model_settings)
         
         # Extract number of models
-        n_models = _extract_numeric(config, global_model_settings, "n_models", int)
         if n_models <= 0:
             raise ValueError("Configuration 'n_models' must be a positive integer.")
         # end if
         
-        # Extract validation parameters
-        min_velocity, max_velocity, unique_thresh, entropy_thresh, zero_thresh = _extract_validation_parameters(
-            config, global_model_settings
-        )
-        
-        # Extract model blur sigma
-        model_blur_sigma = _extract_model_blur_sigma(config, global_model_settings, per_model_settings)
-        
-        # Extract model types and probabilities
-        model_types, model_probs = _extract_model_types_and_probabilities(config)
-        
-        # Sanitize model parameters
-        sanitised_model_params = _sanitize_model_parameters(model_types, per_model_settings)
-        
-        # Extract transform types and probabilities
-        transform_types, transform_probs = _extract_transform_types_and_probabilities(config)
-        
-        # Extract transform parameters
-        transform_params = _extract_transform_parameters(config, transform_types)
-        
         # Get seed
-        effective_seed = seed if seed is not None else config.get_parameter("seed")
+        effective_seed = seed if seed is not None else config['random_seed']
+
         # Initialize random number generator
         rng = np.random.default_rng(effective_seed)
         
-        # Get verbose flag
-        verbose_flag = verbose or bool(config.get_parameter("verbose", False))
-        
-        # Get dimensionality from config
-        dim_enum = config.get_dimensionality()
-        
-        # Generate velocity models
-        velocity_models = synthesize_velocity_models(
-            rng=rng,
-            nx=nx,
-            nz=nz,
-            dx=dx,
-            dz=dz,
-            model_types=model_types,
-            model_probs=model_probs,
-            model_params=sanitised_model_params,
-            model_blur_sigma=model_blur_sigma,
-            transform_types=transform_types,
-            transform_probs=transform_probs,
-            transform_params=transform_params,
+        # Generate raw velocity arrays
+        velocity_models: List = synthesize_velocity_models(
             n_models=n_models,
-            min_v=min_velocity,
-            max_v=max_velocity,
-            unique_thresh=unique_thresh,
-            entropy_thresh=entropy_thresh,
-            zero_thresh=zero_thresh,
-            dimensionality=dim_enum,
-            ny=ny,
-            dy=dy,
-            verbose=verbose_flag,
+            rng=rng,
+            config=config,
+            verbose=verbose,
         )
 
         # Create output directory if it doesn't exist
         output_path.parent.mkdir(parents=True, exist_ok=True)
         
         # Save velocity models
-        save_velocity_models(velocity_models, output_path)
+        save_velocity_models(
+            models=velocity_models,
+            path=output_path,
+            file_format="pickle",
+        )
 
         # Display results table
-        dim_str = config.get_parameter("dimensionality")
         _display_results_table(
             config_path=config_path,
             output_path=output_path,
             effective_seed=effective_seed,
             velocity_models=velocity_models,
-            dim_str=dim_str,
-            nx=nx,
-            ny=ny,
-            nz=nz,
-            model_types=model_types,
-            transform_types=transform_types
+            dim_str="2",
+            nx=config['grid']['points_x'],
+            ny=None,
+            nz=config['grid']['points_z'],
+            model_types=config['model_types']['available_types'],
+            transform_types=config['transformations']['available_transforms']
         )
     except (FileNotFoundError, FileExistsError, ValueError, yaml.YAMLError) as exc:
         raise exc

@@ -330,7 +330,7 @@ class CompositeNoiseSource(NoiseSource):
             source_seed = None if seed is None else seed + i
             
             # Generate the signal from this source
-            signal, _ = source.generate(time_step, num_samples, seed=source_seed)
+            signal, _ = source.create_velocity_model(time_step, num_samples, seed=source_seed)
             
             # Ensure the signal has the right length
             if len(signal) < num_samples:

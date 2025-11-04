@@ -1,148 +1,184 @@
 """
-Functions for generating synthetic velocity models.
-
-This module provides functions for generating various types of synthetic velocity models
-for seismic modeling and inversion.
+High-level helpers to generate collections of synthetic velocity models.
 """
 
-import numpy as np
-from typing import Dict, List, Optional, Tuple, Union, Any
-from pathlib import Path
-import matplotlib.pyplot as plt
+from __future__ import annotations
 
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
+
+import numpy as np
+from skimage import filters
+from rich.console import Console
+
+from .data_augmentation import (
+    AddCrossLine,
+    AddInclusion,
+    AddPerlinNoise,
+    RandomDisplacementField,
+    RandomPiecewiseAffine,
+    RandomRotation,
+    RandomStretch,
+    RandomSwirl,
+)
 from .layer_generation import (
-    layered_model,
-    random_fault_model,
     dome_model,
+    layered_model,
     perlin_threshold_model,
+    random_fault_model,
+)
+from ..validation import is_valid_velmap
+from ..velocity import (
+    VelocityModel1D,
+    VelocityModel2D,
+    VelocityModel3D,
+    create_velocity_model
 )
 
 
-def generate_models(
-    num_models: int,
-    output_dir: Union[str, Path],
-    model_type: str = "layered",
-    nx: int = 100,
-    nz: int = 100,
-    dx: float = 10.0,
-    dz: float = 10.0,
-    min_velocity: float = 1500.0,
-    max_velocity: float = 4500.0,
-    num_layers: Optional[int] = None,
-    fault_probability: float = 0.5,
-    dome_probability: float = 0.3,
-    perlin_probability: float = 0.2,
-    random_seed: Optional[int] = None,
-    plot_models: bool = True,
-    **kwargs: Any
-) -> List[np.ndarray]:
+
+console = Console()
+
+
+def synthesize_velocity_models(
+        n_models: int,
+        rng: np.random.Generator,
+        config: Dict[str, Any],
+        verbose: bool = False,
+) -> List[Union[VelocityModel1D, VelocityModel2D, VelocityModel3D]]:
     """
-    Generate a specified number of synthetic velocity models.
+    Generate a batch of velocity models using configurable primitives.
     
     Args:
-        num_models: Number of models to generate
-        output_dir: Directory to save the generated models
-        model_type: Type of model to generate ('layered', 'fault', 'dome', 'perlin', or 'mixed')
-        nx: Number of grid points in x direction
-        nz: Number of grid points in z direction
-        dx: Grid spacing in x direction (meters)
-        dz: Grid spacing in z direction (meters)
-        min_velocity: Minimum velocity value (m/s)
-        max_velocity: Maximum velocity value (m/s)
-        num_layers: Number of layers for layered models
-        fault_probability: Probability of generating a fault model when model_type is 'mixed'
-        dome_probability: Probability of generating a dome model when model_type is 'mixed'
-        perlin_probability: Probability of generating a perlin model when model_type is 'mixed'
-        random_seed: Random seed for reproducibility
-        plot_models: Whether to plot the generated models
-        **kwargs: Additional keyword arguments for specific model generators
+        n_models (int): Number of models to generate.
+        rng: Random number generator.
+        config: Model generation configuration.
+        verbose: Whether to print verbose output.
         
     Returns:
-        List of generated velocity models as numpy arrays
+        List of VelocityMap objects.
+        
+    Raises:
+        NotImplementedError: If 1D or 3D dimensionality is requested (currently only 2D is implemented).
     """
-    # Set random seed if provided
-    if random_seed is not None:
-        np.random.seed(random_seed)
-    # end if
-    
-    # Create output directory if it doesn't exist
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Initialize list to store generated models
-    models = []
-    
-    # Generate models
-    for i in range(num_models):
-        # For mixed model type, randomly select a model type based on probabilities
-        if model_type == "mixed":
-            rand_val = np.random.random()
-            if rand_val < fault_probability:
-                current_model_type = "fault"
-            elif rand_val < fault_probability + dome_probability:
-                current_model_type = "dome"
-            elif rand_val < fault_probability + dome_probability + perlin_probability:
-                current_model_type = "perlin"
-            else:
-                current_model_type = "layered"
+    # Shortcuts
+    model_types = config['model_types']['available_types']
+    model_probs = config['model_types']['selection_probabilities']
+    model_params = config['model_parameters']
+    transforms = config['transformations']['available_transforms']
+    transform_probs = config['transformations']['application_probabilities']
+    transform_params = config['transformation_parameters']
+
+    # Sigma blur param
+    sigma_blur = config['smoothing_sigma']
+
+    # Grid configuration
+    grid_conf = config['grid']
+    dx = grid_conf['spacing_x']
+    dz = grid_conf['spacing_z']
+    nx = grid_conf['points_x']
+    nz = grid_conf['points_z']
+
+    # Validation
+    velocity_val = config['validation']['velocity']
+    quality_val = config['validation']['quality']
+
+    # Classes for each velmap of vel map
+    model_classes: Dict[str, Any] = {
+        "layered": layered_model,
+        "fault": random_fault_model,
+        "dome": dome_model,
+        "perlin": perlin_threshold_model,
+    }
+
+    # Transformation classes
+    transform_classes: Dict[str, Any] = {
+        "rotate": RandomRotation,
+        "stretch": RandomStretch,
+        "inclusion": AddInclusion,
+        "perlin_noise": AddPerlinNoise,
+        "add_crossline": AddCrossLine,
+        "swirl": RandomSwirl,
+        "piecewise_affine": RandomPiecewiseAffine,
+        "displacement_field": RandomDisplacementField,
+    }
+
+    # Create transformers
+    transforms_list: Dict[str, Any] = {
+        name: transform_classes[name](**transform_params.get(name, {}), rng=rng)
+        for name in transforms
+    }
+
+    # Model weights
+    model_weights: List[float] = [model_probs[m] for m in model_types]
+    transform_weights: List[float] = [transform_probs.get(t, 0.0) for t in transforms]
+
+    # Keep and count generated models
+    velocity_models = []
+    n_generated: int = 0
+
+    # Generate each velmap
+    while n_generated < n_models:
+        # Choose a velmap type randomly
+        model_name = rng.choice(model_types, p=model_weights)
+
+        # Generate the velocity map
+        velmap = model_classes[model_name](
+            nz=nz,
+            nx=nx,
+            rng=rng,
+            **model_params.get(model_name),
+        )
+
+        # Apply transform randomly
+        for name, prob in zip(transforms, transform_weights):
+            if rng.random() < prob:
+                velmap = transforms_list[name](velmap)
             # end if
-        else:
-            current_model_type = model_type
+        # end for
+
+        # Check if the velmap is valid
+        if not is_valid_velmap(
+            velmap=velmap,
+            min_v=velocity_val['min_velocity'],
+            max_v=velocity_val['max_velocity'],
+            zero_thresh=quality_val['zero_threshold'],
+            unique_thresh=quality_val['unique_threshold'],
+            entropy_thresh=quality_val['entropy_threshold'],
+            verbose=verbose,
+        ):
+            if verbose:
+                console.print(f"[bold red]WARNING[/]: [x] velocity map {n_generated} invalid, skipped.")
+            # end if
+            continue
         # end if
-        
-        # Generate model based on selected type
-        if current_model_type == "layered":
-            n_layers = num_layers if num_layers is not None else np.random.randint(3, 10)
-            model = layered_model(
-                nx=nx,
-                nz=nz,
-                num_layers=n_layers,
-                min_velocity=min_velocity,
-                max_velocity=max_velocity,
-                **kwargs
-            )
-        elif current_model_type == "fault":
-            model = random_fault_model(
-                nx=nx,
-                nz=nz,
-                min_velocity=min_velocity,
-                max_velocity=max_velocity,
-                **kwargs
-            )
-        elif current_model_type == "dome":
-            model = dome_model(
-                nx=nx,
-                nz=nz,
-                min_velocity=min_velocity,
-                max_velocity=max_velocity,
-                **kwargs
-            )
-        elif current_model_type == "perlin":
-            model = perlin_threshold_model(
-                nx=nx,
-                nz=nz,
-                min_velocity=min_velocity,
-                max_velocity=max_velocity,
-                **kwargs
-            )
-        else:
-            raise ValueError(f"Unknown model type: {current_model_type}")
-        # end if
-        
-        # Save and optionally plot the model
-        save_and_plot(
-            model=model,
-            filename=output_dir / f"model_{i:04d}.npy",
-            dx=dx,
-            dz=dz,
-            plot=plot_models
+
+        # Blur velocity map
+        velmap = filters.gaussian(
+            image=velmap,
+            sigma=sigma_blur,
+            preserve_range=True
+        )
+
+        # Create
+        velocity_model = create_velocity_model(
+            data=velmap,
+            grid_spacing=(dx, dz),
+            metadata={
+                "index": n_generated,
+                "generated_with": "generate_models",
+                "model_type": model_name,
+                "model_blur_sigma": sigma_blur,
+                "generation_date": str(np.datetime64('now'))
+            },
         )
         
-        models.append(model)
-    # end for
-    
-    return models
-# end def generate_models
+        velocity_models.append(velocity_model)
+        n_generated += 1
+    # end while
+
+    return velocity_models
+# end generate_models
 
 
 def save_and_plot(
@@ -153,31 +189,32 @@ def save_and_plot(
     plot: bool = True
 ) -> None:
     """
-    Save a velocity model to a file and optionally plot it.
+    Save a velocity model to a NumPy file and optionally export a preview plot.
     
     Args:
-        model: Velocity model as a 2D numpy array
-        filename: Path to save the model
-        dx: Grid spacing in x direction (meters)
-        dz: Grid spacing in z direction (meters)
-        plot: Whether to plot the model
+        model: Velocity model as a 2D numpy array.
+        filename: Path (with .npy extension) where the model will be stored.
+        dx: Grid spacing in the x direction (meters).
+        dz: Grid spacing in the z direction (meters).
+        plot: Whether to write a PNG preview alongside the array.
     """
-    # Save model
+    from matplotlib import pyplot as plt  # Local import to avoid hard dependency when unused
+
+    filename = Path(filename)
+    filename.parent.mkdir(parents=True, exist_ok=True)
     np.save(filename, model)
-    
-    # Plot model if requested
-    if plot:
-        plt.figure(figsize=(10, 6))
-        extent = [0, model.shape[1] * dx, model.shape[0] * dz, 0]
-        plt.imshow(model, cmap='viridis', extent=extent)
-        plt.colorbar(label='Velocity (m/s)')
-        plt.xlabel('Distance (m)')
-        plt.ylabel('Depth (m)')
-        plt.title(f'Velocity Model: {Path(filename).stem}')
-        
-        # Save plot with same name but different extension
-        plot_filename = str(filename).replace('.npy', '.png')
-        plt.savefig(plot_filename, dpi=300, bbox_inches='tight')
-        plt.close()
-    # end if
+
+    if not plot:
+        return
+
+    plt.figure(figsize=(10, 6))
+    extent = [0, model.shape[1] * dx, model.shape[0] * dz, 0]
+    plt.imshow(model, cmap="viridis", extent=extent)
+    plt.colorbar(label="Velocity (m/s)")
+    plt.xlabel("Distance (m)")
+    plt.ylabel("Depth (m)")
+    plt.title(f"Velocity Model: {filename.stem}")
+    plot_filename = filename.with_suffix(".png")
+    plt.savefig(plot_filename, dpi=300, bbox_inches="tight")
+    plt.close()
 # end def save_and_plot
