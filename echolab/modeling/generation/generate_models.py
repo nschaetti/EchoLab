@@ -143,7 +143,7 @@ def synthesize_velocity_models(
             min_v=velocity_val['min_velocity'],
             max_v=velocity_val['max_velocity'],
             zero_thresh=quality_val['zero_threshold'],
-            unique_thresh=quality_val['unique_threshold'],
+            unique_thresh=quality_val['uniqueness_threshold'],
             entropy_thresh=quality_val['entropy_threshold'],
             verbose=verbose,
         ):

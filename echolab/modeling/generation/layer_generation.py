@@ -7,365 +7,314 @@ including layered models, fault models, dome models, and perlin noise-based mode
 
 import numpy as np
 from typing import List, Optional, Tuple, Union
+import matplotlib.pyplot as plt
 from noise import pnoise2
+from scipy.ndimage import rotate
+from pathlib import Path
+from skimage import filters
+from typing import Tuple, List, Dict, Union, Optional, Any, Callable
+
 
 
 def layered_model(
-    nx: int = 100,
-    nz: int = 100,
-    num_layers: int = 5,
-    min_velocity: float = 1500.0,
-    max_velocity: float = 4500.0,
-    smoothing: float = 0.0,
-    random_seed: Optional[int] = None
+        nz: int,
+        nx: int,
+        layers: Optional[List[Tuple[int, float]]] = None,
+        n_layers_range: Tuple[int, int] = (3, 6),
+        v_range: Tuple[float, float] = (1500, 2500),
+        angle: float = 0.0,
+        rng: Optional[np.random.Generator] = None
 ) -> np.ndarray:
     """
-    Generate a layered velocity model with horizontal layers.
-    
+    Generate a layered velocity model.
+
     Args:
-        nx: Number of grid points in x direction
-        nz: Number of grid points in z direction
-        num_layers: Number of layers in the model
-        min_velocity: Minimum velocity value (m/s)
-        max_velocity: Maximum velocity value (m/s)
-        smoothing: Amount of smoothing to apply (0.0 = no smoothing)
-        random_seed: Random seed for reproducibility
-        
+        nz: Number of grid points in z-direction
+        nx: Number of grid points in x-direction
+        layers: List of (thickness, velocity) tuples for each layer
+        n_layers_range: Range for number of layers if layers is None
+        v_range: Range for velocities if layers is None
+        angle: Maximum rotation angle in degrees
+        rng: Random number generator
+
     Returns:
-        2D numpy array representing the velocity model
+        2D array representing the layered velocity model
     """
-    # Set random seed if provided
-    if random_seed is not None:
-        np.random.seed(random_seed)
+    if rng is None:
+        rng = np.random.default_rng()
     # end if
-    
-    # Initialize velocity model
-    model = np.zeros((nz, nx))
-    
-    # Generate layer boundaries
-    layer_boundaries = np.sort(np.random.choice(range(1, nz), num_layers - 1, replace=False))
-    layer_boundaries = np.concatenate(([0], layer_boundaries, [nz]))
-    
-    # Generate velocities for each layer (increasing with depth)
-    velocities = np.linspace(min_velocity, max_velocity, num_layers)
-    np.random.shuffle(velocities)  # Shuffle to avoid strictly increasing velocity with depth
-    
-    # Fill the model with layer velocities
-    for i in range(num_layers):
-        start_z = layer_boundaries[i]
-        end_z = layer_boundaries[i + 1]
-        model[start_z:end_z, :] = velocities[i]
+
+    # Random layer generation if not provided
+    if layers is None:
+        n_layers = rng.integers(n_layers_range[0], n_layers_range[1] + 1)
+
+        # Distribute thicknesses by normalizing
+        raw = rng.uniform(1, 2, size=n_layers)
+        thicknesses = (raw / raw.sum() * nz).astype(int)
+
+        # Ensure the sum is exactly nz
+        thicknesses[-1] += nz - thicknesses.sum()
+        velocities = np.sort(rng.uniform(*v_range, size=n_layers))  # increasing velocity
+        layers = list(zip(thicknesses, velocities))
+    # end if
+
+    # Initialize
+    vel = np.zeros((nz, nx))
+    cd = 0
+
+    # Add each layer
+    for thickness, v in layers:
+        layer_mask = np.zeros((nz, nx), dtype=bool)
+        layer_mask[cd:cd+thickness, :] = True
+        vel[layer_mask] = v
+        cd += thickness
     # end for
-    
-    # Apply smoothing if requested
-    if smoothing > 0:
-        from scipy.ndimage import gaussian_filter
-        model = gaussian_filter(model, sigma=smoothing)
-    # end if
-    
-    return model
-# end def layered_model
+
+    vel[vel == 0] = layers[-1][1]
+
+    # Rotate model
+    random_angle = (rng.random() - 0.5) * 2.0 * angle
+    vel = rotate(vel, angle=random_angle, reshape=False, order=0, mode='nearest')
+
+    return vel
+# end layered_model
 
 
 def random_fault_model(
-    nx: int = 100,
-    nz: int = 100,
-    num_layers: int = 5,
-    num_faults: int = 2,
-    min_velocity: float = 1500.0,
-    max_velocity: float = 4500.0,
-    max_fault_throw: Optional[int] = None,
-    smoothing: float = 0.0,
-    random_seed: Optional[int] = None
+        nz: int,
+        nx: int,
+        v_range: Tuple[float, float],
+        delta_v_range: Tuple[float, float] = (200, 500),
+        slope_range: Tuple[float, float] = (0.1, 0.5),
+        offset_range: Tuple[int, int] = (-20, 20),
+        rng: Optional[np.random.Generator] = None
 ) -> np.ndarray:
     """
-    Generate a layered velocity model with random faults.
-    
+    Generate a velocity model with a random fault.
+
     Args:
-        nx: Number of grid points in x direction
-        nz: Number of grid points in z direction
-        num_layers: Number of layers in the model
-        num_faults: Number of faults to include
-        min_velocity: Minimum velocity value (m/s)
-        max_velocity: Maximum velocity value (m/s)
-        max_fault_throw: Maximum displacement of layers across faults
-        smoothing: Amount of smoothing to apply (0.0 = no smoothing)
-        random_seed: Random seed for reproducibility
-        
+        nz: Number of grid points in z-direction
+        nx: Number of grid points in x-direction
+        v_range: Range for base velocity
+        delta_v_range: Range for velocity contrast across the fault
+        slope_range: Range for fault slope
+        offset_range: Range for fault horizontal offset
+        rng: Random number generator
+
     Returns:
-        2D numpy array representing the velocity model
+        2D array representing the velocity model with a fault
     """
-    # Set random seed if provided
-    if random_seed is not None:
-        np.random.seed(random_seed)
+    if rng is None:
+        rng = np.random.default_rng()
     # end if
-    
-    # Set default max_fault_throw if not provided
-    if max_fault_throw is None:
-        max_fault_throw = nz // 5
-    # end if
-    
-    # Generate a layered model first
-    model = layered_model(
-        nx=nx,
-        nz=nz,
-        num_layers=num_layers,
-        min_velocity=min_velocity,
-        max_velocity=max_velocity,
-        smoothing=0.0  # No smoothing yet
-    )
-    
-    # Generate fault locations
-    fault_locations = np.sort(np.random.choice(range(1, nx - 1), num_faults, replace=False))
-    
-    # Apply faults
-    for fault_loc in fault_locations:
-        # Random fault throw (displacement)
-        throw = np.random.randint(1, max_fault_throw + 1)
-        
-        # Randomly decide if throw is up or down
-        if np.random.random() < 0.5:
-            throw = -throw
-        # end if
-        
-        # Apply the fault - shift the right side of the model
-        if throw > 0:
-            model[throw:, fault_loc:] = model[:-throw, fault_loc:]
-            # Fill the gap with the last layer
-            for x in range(fault_loc, nx):
-                model[:throw, x] = model[throw, x]
-            # end for
-        else:
-            throw = abs(throw)
-            model[:-throw, fault_loc:] = model[throw:, fault_loc:]
-            # Fill the gap with the last layer
-            for x in range(fault_loc, nx):
-                model[-throw:, x] = model[-throw-1, x]
-            # end for
+
+    base_v = rng.uniform(*v_range)
+    vel = np.ones((nz, nx)) * base_v
+    delta_v = rng.uniform(*delta_v_range)
+    slope = rng.uniform(*slope_range)
+    offset = rng.integers(*offset_range)
+
+    for i in range(nz):
+        shift = int(i * slope) + offset
+        if shift < nx:
+            vel[i, max(0, shift):] += delta_v
         # end if
     # end for
-    
-    # Apply smoothing if requested
-    if smoothing > 0:
-        from scipy.ndimage import gaussian_filter
-        model = gaussian_filter(model, sigma=smoothing)
-    # end if
-    
-    return model
-# end def random_fault_model
+
+    return vel
+# end random_fault_model
 
 
 def dome_model(
-    nx: int = 100,
-    nz: int = 100,
-    num_layers: int = 5,
-    dome_height: Optional[int] = None,
-    dome_width: Optional[int] = None,
-    dome_center: Optional[int] = None,
-    min_velocity: float = 1500.0,
-    max_velocity: float = 4500.0,
-    smoothing: float = 0.0,
-    random_seed: Optional[int] = None
+        nz: int,
+        nx: int,
+        v_high_range: Tuple[float, float],
+        v_low_range: Tuple[float, float],
+        center_range: Tuple[float, float],
+        radius_range: Tuple[float, float],
+        rng: Optional[np.random.Generator] = None
 ) -> np.ndarray:
     """
     Generate a velocity model with a dome structure.
-    
-    Args:
-        nx: Number of grid points in x direction
-        nz: Number of grid points in z direction
-        num_layers: Number of layers in the model
-        dome_height: Height of the dome in grid points
-        dome_width: Width of the dome in grid points
-        dome_center: X-coordinate of the dome center
-        min_velocity: Minimum velocity value (m/s)
-        max_velocity: Maximum velocity value (m/s)
-        smoothing: Amount of smoothing to apply (0.0 = no smoothing)
-        random_seed: Random seed for reproducibility
-        
-    Returns:
-        2D numpy array representing the velocity model
-    """
-    # Set random seed if provided
-    if random_seed is not None:
-        np.random.seed(random_seed)
-    # end if
-    
-    # Set default parameters if not provided
-    if dome_height is None:
-        dome_height = nz // 3
-    # end if
-    
-    if dome_width is None:
-        dome_width = nx // 2
-    # end if
-    
-    if dome_center is None:
-        dome_center = nx // 2
-    # end if
-    
-    # Generate a layered model first
-    model = layered_model(
-        nx=nx,
-        nz=nz,
-        num_layers=num_layers,
-        min_velocity=min_velocity,
-        max_velocity=max_velocity,
-        smoothing=0.0  # No smoothing yet
-    )
-    
-    # Create a dome shape
-    x = np.arange(nx)
-    dome = dome_height * np.exp(-((x - dome_center) ** 2) / (2 * (dome_width / 4) ** 2))
-    dome = dome.astype(int)
-    
-    # Apply the dome deformation to the model
-    new_model = np.zeros_like(model)
-    
-    for i in range(nx):
-        shift = dome[i]
-        if shift > 0:
-            # Shift layers upward
-            new_model[:-shift, i] = model[shift:, i]
-            # Fill the bottom with the last layer
-            new_model[-shift:, i] = model[-1, i]
-        # end if
-    # end for
-    
-    # Apply smoothing if requested
-    if smoothing > 0:
-        from scipy.ndimage import gaussian_filter
-        new_model = gaussian_filter(new_model, sigma=smoothing)
-    # end if
-    
-    return new_model
-# end def dome_model
 
-
-def generate_perlin_noise_2d(
-    shape: Tuple[int, int],
-    scale: float = 10.0,
-    octaves: int = 6,
-    persistence: float = 0.5,
-    lacunarity: float = 2.0,
-    seed: Optional[int] = None
-) -> np.ndarray:
-    """
-    Generate a 2D Perlin noise array.
-    
     Args:
-        shape: Shape of the output array (height, width)
-        scale: Scale of the noise (higher = more zoomed out)
-        octaves: Number of octaves (detail levels)
-        persistence: How much each octave contributes to the overall shape
-        lacunarity: How much detail is added at each octave
-        seed: Random seed
-        
+        nz: Number of grid points in z-direction
+        nx: Number of grid points in x-direction
+        v_high_range: Range for high velocity (inside dome)
+        v_low_range: Range for low velocity (outside dome)
+        center_range: Range for dome center coordinates
+        radius_range: Range for dome radius
+        rng: Random number generator
+
     Returns:
-        2D numpy array of Perlin noise values between -1 and 1
+        2D array representing the velocity model with a dome
     """
-    if not NOISE_AVAILABLE:
-        raise ImportError("The 'noise' package is required for Perlin noise generation. "
-                         "Install it with 'pip install noise'.")
+    if rng is None:
+        rng = np.random.default_rng()
     # end if
-    
-    height, width = shape
-    
-    # Initialize the noise array
-    noise = np.zeros(shape)
-    
-    # Set seed if provided
-    if seed is not None:
-        import random
-        random.seed(seed)
-        seed_value = random.randint(0, 100)
-    else:
-        seed_value = 0
-    # end if
-    
-    # Generate the noise
-    for i in range(height):
-        for j in range(width):
-            noise[i][j] = pnoise2(
-                i / scale,
-                j / scale,
-                octaves=octaves,
-                persistence=persistence,
-                lacunarity=lacunarity,
-                repeatx=width,
-                repeaty=height,
-                base=seed_value
-            )
+
+    # Random parameters
+    center = (rng.uniform(*center_range), rng.uniform(*radius_range))
+    v_high = rng.uniform(*v_high_range)
+    v_low = rng.uniform(*v_low_range)
+    radius = rng.uniform(*radius_range)
+
+    # Base model
+    vel = np.ones((nz, nx)) * v_low
+
+    for i in range(nz):
+        for j in range(nx):
+            dist = np.sqrt((i - center[0])**2 + (j - center[1])**2)
+            if dist < radius:
+                vel[i, j] = v_high
+            # end if
         # end for
     # end for
-    
-    return noise
-# end def generate_perlin_noise_2d
+
+    return vel
+# end dome_model
 
 
 def perlin_threshold_model(
-    nx: int = 100,
-    nz: int = 100,
-    min_velocity: float = 1500.0,
-    max_velocity: float = 4500.0,
-    num_thresholds: int = 4,
-    scale: float = 10.0,
-    octaves: int = 6,
-    smoothing: float = 0.0,
-    random_seed: Optional[int] = None
+        nz: int,
+        nx: int,
+        scale_range: Tuple[float, float],
+        v_range: Tuple[float, float],
+        contrast_range: Tuple[float, float],
+        n_level_range: Tuple[int, int],
+        rng: Optional[np.random.Generator] = None
 ) -> np.ndarray:
     """
-    Generate a velocity model using Perlin noise with thresholds.
-    
+    Generate a velocity model based on Perlin noise with thresholding.
+
     Args:
-        nx: Number of grid points in x direction
-        nz: Number of grid points in z direction
-        min_velocity: Minimum velocity value (m/s)
-        max_velocity: Maximum velocity value (m/s)
-        num_thresholds: Number of velocity regions
-        scale: Scale of the Perlin noise
-        octaves: Number of octaves for Perlin noise
-        smoothing: Amount of smoothing to apply (0.0 = no smoothing)
-        random_seed: Random seed for reproducibility
-        
+        nz: Number of grid points in z-direction
+        nx: Number of grid points in x-direction
+        scale_range: Range for noise scale
+        v_range: Range for velocities
+        contrast_range: Range for noise contrast
+        n_level_range: Range for number of velocity levels
+        rng: Random number generator
+
     Returns:
-        2D numpy array representing the velocity model
+        2D array representing the velocity model with Perlin noise patterns
     """
-    # Set random seed if provided
-    if random_seed is not None:
-        np.random.seed(random_seed)
+    if rng is None:
+        rng = np.random.default_rng()
     # end if
-    
-    # Generate Perlin noise
-    noise = generate_perlin_noise_2d(
-        shape=(nz, nx),
-        scale=scale,
-        octaves=octaves,
-        seed=random_seed
+
+    base_v = rng.uniform(*v_range)
+    scale = rng.uniform(*scale_range)
+    contrast = rng.uniform(*contrast_range)
+    n_levels = rng.integers(*n_level_range)
+    v_levels = rng.uniform(*v_range, n_levels)
+
+    # Resolution derived from global scale
+    res = (
+        max(1, int(nz / scale)),
+        max(1, int(nx / scale))
     )
-    
-    # Normalize noise to [0, 1]
+
+    noise = generate_perlin_noise_2d((nz, nx), res=res, rng=rng)
     noise = (noise - noise.min()) / (noise.max() - noise.min())
-    
-    # Create thresholds
-    thresholds = np.linspace(0, 1, num_thresholds + 1)
-    
-    # Create velocity values for each region
-    velocities = np.linspace(min_velocity, max_velocity, num_thresholds)
-    
-    # Initialize model
-    model = np.zeros((nz, nx))
-    
-    # Assign velocities based on thresholds
-    for i in range(num_thresholds):
-        mask = (noise >= thresholds[i]) & (noise < thresholds[i + 1])
-        model[mask] = velocities[i]
-    # end for
-    
-    # Apply smoothing if requested
-    if smoothing > 0:
-        from scipy.ndimage import gaussian_filter
-        model = gaussian_filter(model, sigma=smoothing)
+    vel = base_v + contrast * noise
+    v_levels = np.array(v_levels)
+    vel = np.vectorize(lambda v: v_levels[np.argmin(np.abs(v_levels - v))])(vel)
+
+    return vel
+# end perlin_threshold_model
+
+
+def save_and_plot(vel: np.ndarray, name: str = "vel_model", output_dir: str = "models") -> None:
+    """
+    Save a velocity model as a numpy array and plot it as an image.
+
+    Args:
+        vel: Velocity model as a 2D array
+        name: Base name for the saved files
+        output_dir: Directory where files will be saved
+    """
+    Path(output_dir).mkdir(exist_ok=True)
+    np.save(f"{output_dir}/{name}.npy", vel)
+    plt.imshow(vel, cmap="viridis", aspect='auto')
+    plt.colorbar(label="Velocity (m/s)")
+    plt.title(name)
+    plt.savefig(f"{output_dir}/{name}.png")
+    plt.close()
+# end save_and_plot
+
+
+
+def generate_perlin_noise_2d(
+        shape: Tuple[int, int],
+        res: Tuple[int, int],
+        rng: Optional[np.random.Generator] = None
+) -> np.ndarray:
+    """
+    Generate 2D Perlin noise.
+
+    Args:
+        shape: Shape of the output noise array (height, width)
+        res: Resolution of the noise (height_res, width_res)
+        rng: Random number generator
+
+    Returns:
+        2D array of Perlin noise
+    """
+    if rng is None:
+        rng = np.random.default_rng()
     # end if
-    
-    return model
-# end def perlin_threshold_model
+
+    def f(t):
+        return 6*t**5 - 15*t**4 + 10*t**3
+    # end f
+
+    delta = (res[0] / shape[0], res[1] / shape[1])
+    d = (shape[0] // res[0], shape[1] // res[1])
+    grid = rng.normal(size=(res[0]+1, res[1]+1, 2))
+    grid /= np.linalg.norm(grid, axis=-1, keepdims=True)
+
+    # coordinates
+    xs = np.linspace(0, res[1], shape[1], endpoint=False)
+    ys = np.linspace(0, res[0], shape[0], endpoint=False)
+    xi = xs.astype(int)
+    yi = ys.astype(int)
+    xf = xs - xi
+    yf = ys - yi
+    u = f(xf)
+    v = f(yf)
+
+    # gradients
+    def g(ix, iy):
+        return grid[iy % res[0], ix % res[1]]
+    # end g
+
+    def dot(ix, iy, x, y):
+        return (x * g(ix, iy)[..., 0] + y * g(ix, iy)[..., 1])
+    # end dot
+
+    noise = np.zeros(shape)
+    for i in range(shape[0]):
+        for j in range(shape[1]):
+            xi0 = xi[j]
+            yi0 = yi[i]
+            xf0 = xf[j]
+            yf0 = yf[i]
+
+            dots = [
+                dot(xi0, yi0, xf0, yf0),
+                dot(xi0+1, yi0, xf0-1, yf0),
+                dot(xi0, yi0+1, xf0, yf0-1),
+                dot(xi0+1, yi0+1, xf0-1, yf0-1),
+            ]
+            x1 = dots[0] + u[j] * (dots[1] - dots[0])
+            x2 = dots[2] + u[j] * (dots[3] - dots[2])
+            noise[i, j] = x1 + v[i] * (x2 - x1)
+        # end for
+    # end for
+
+    return noise
+# end generate_perlin_noise_2d
+
+
+

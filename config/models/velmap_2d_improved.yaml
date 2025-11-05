@@ -55,12 +55,11 @@ model_parameters:
   # Parameters specific to layered models
   layered:
     # Range for number of layers [min, max]
-    num_layers: [3, 12]
+    n_layers_range: [3, 12]
     # Velocity range for layers in m/s [min, max]
-    min_velocity: 1500
-    max_velocity: 4500
-    # Smoothing
-    smoothing: 0.0
+    v_range: [1500, 4500]
+    # Angle
+    angle: 25.0
   # end layered
   
   # Parameters specific to fault models
